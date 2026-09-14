@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>大模型「顿悟」现象研究 · Neel Nanda 论文中文站</title>
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+  <div id="progress"></div>
+
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/">
+        <span class="logo">悟</span>
+        <span>顿悟现象研究 <small>· Progress Measures for Grokking</small></span>
+      </a>
+      <nav class="main">
+        <a href="/paper-zh.html">论文中文翻译</a>
+        <a href="/paper.pdf" target="_blank">原文 PDF</a>
+        <a class="btn" href="/model.html">🧬 模型可视化</a>
+      </nav>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <section class="hero">
+      <div class="zh-en">大模型涌现 / 顿悟现象 · 机理解释方向</div>
+      <h1>《用机械可解释性度量「顿悟」(grokking) 的进展》<br />中文研读与本地复现</h1>
+      <p class="sub">
+        本站围绕 Neel Nanda 等（ICLR 2023, arXiv:2301.05217）的经典论文展开：先把论文全文译成中文以便研读，
+        同时给出本工作区中用 <strong>PyTorch（纯 CPU）</strong> 从头复现的训练与机理解释图表，让「顿悟」现象可读、可跑、可验证。
+      </p>
+    </section>
+
+    <section class="cards">
+      <a class="card" href="/paper-zh.html">
+        <div class="tag">DOCS → 中文</div>
+        <h3>📄 论文中文翻译（HTML）</h3>
+        <p>把 docs/ 下的论文译成中文并排版为网页：含公式、图表说明、章节导航。</p>
+      </a>
+      <a class="card" href="/paper.pdf" target="_blank">
+        <div class="tag">原文</div>
+        <h3>📑 原始论文 PDF</h3>
+        <p>查看 docs/ 目录中保存的英文原版（由后端直接托管）。</p>
+      </a>
+      <a class="card" href="/api/meta">
+        <div class="tag">SERVER</div>
+        <h3>⚙️ 后端 API</h3>
+        <p>查看 TypeScript 后端（web/server/index.ts）提供的元信息端点。</p>
+      </a>
+    </section>
+
+    <section class="sec-block">
+      <h2>论文要旨</h2>
+      <p>
+        这篇论文研究小 Transformer 在<strong>模加法</strong>（$a+b \bmod P$）任务上表现出的
+        <strong>顿悟（grokking）</strong>现象：模型先"死记硬背"训练数据，随后在某个训练时刻突然学会泛化。
+        作者通过<strong>机械可解释性</strong>把模型学到的算法完整逆向出来——它把输入映射到圆上的旋转，
+        用傅里叶级数 + 三角恒等式完成加法——并据此定义了能<strong>先于顿悟持续变化</strong>的
+        <em>progress measures</em>，把训练切成三个阶段：<strong>记忆 → 电路形成 → 清理</strong>。
+      </p>
+      <p>本站的 <a href="/paper-zh.html">中文翻译页</a> 完整覆盖了论文的上述论证与结论。</p>
+    </section>
+
+    <section class="sec-block">
+      <h2>本地复现（python/ 目录 · CPU）</h2>
+      <p>我们在工作区的 <code>python/</code> 目录里用 PyTorch 复现了论文主实验（P=113、单层 Transformer、全批量 AdamW、权重衰减 λ=1），跑了 5 个随机种子，全部在约 3k–10k epoch 出现顿悟，且内部关键频率稀疏、progress measures 呈现清晰三阶段。关键图表已嵌入<a href="/paper-zh.html#sec-repro">中文翻译页对应小节</a>。</p>
+      <table class="meta">
+        <tr><td>论文编号</td><td>arXiv:2301.05217</td></tr>
+        <tr><td>论文标题</td><td>Progress measures for grokking via mechanistic interpretability</td></tr>
+        <tr><td>作者</td><td>Neel Nanda · Lawrence Chan · Tom Lieberum · Jess Smith · Jacob Steinhardt</td></tr>
+        <tr><td>会议</td><td>ICLR 2023（Spotlight）</td></tr>
+        <tr><td>复现环境</td><td>PyTorch 2.9 (CPU) · Python 3.11 · 5 seeds × 25,000 epochs</td></tr>
+      </table>
+    </section>
+  </main>
+
+  <footer class="site">
+    <div class="wrap" style="padding-bottom: 0;">
+      <div>本页为学习用途的中文翻译与复现整理。数学排版使用 <a href="https://katex.org/" target="_blank">KaTeX</a>。</div>
+      <div class="api-line" id="api-line">正在连接后端 /api/meta …</div>
+    </div>
+  </footer>
+
+  <button id="toTop" aria-label="回到顶部">↑</button>
+  <script src="/js/main.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+          onload="if(window.renderMathInElement){renderMathInElement(document.body,{delimiters:[{left:'$$',right:'$$',display:true},{left:'$',right:'$',display:false},{left:'\\\\(',right:'\\\\)',display:false}]});}"></script>
+</body>
+</html>

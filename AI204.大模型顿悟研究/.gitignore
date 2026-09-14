@@ -1,0 +1,57 @@
+# ============================================================
+# AI204.大模型顿悟研究 — 忽略规则
+#   只忽略“依赖 / 构建产物 / 缓存 / 可重新生成的实验数据”，
+#   源码（*.ts, *.py, *.html, *.css, *.md）与论文 PDF 全部保留。
+# ============================================================
+
+# ---------- Node / 前端：依赖与构建产物 ----------
+node_modules/
+dist/
+build/
+*.tsbuildinfo
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# 01.例子：web/src/*.ts 的 tsc 编译产物（源码在 web/src/，npm run build 重新生成）
+web/js/
+
+# ---------- Python：虚拟环境与缓存 ----------
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+
+# ---------- 运行日志 ----------
+*.log
+
+# ---------- 实验产物（体积大，且都可由脚本重新生成） ----------
+# 02.NeelNanda：run_experiment.py 的训练输出（metrics.csv / model_final.pt / *.npz ...）
+results/
+# 02.NeelNanda：grokking/vizexport.py 导出的可视化数据
+web/public/viz-data/
+
+# 说明：以下两项体积较大但可由脚本再生成，默认保留以便“克隆即可运行”。
+#       若想让仓库更小，删掉行首的 “#” 即可开始忽略：
+# server/data/stages/          # 01.例子：export_stages.py 从 model/*.bin 导出的阶段 JSON
+# 02.NeelNanda/python/figures/ # 02.NeelNanda：make_figures.py 生成的图片
+
+# ---------- 编辑器 / 操作系统 ----------
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---------- 临时文件 ----------
+*.tmp
+*.bak
+*~

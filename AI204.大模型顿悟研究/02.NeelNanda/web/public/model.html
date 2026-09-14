@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>模型可视化 · 网络结构与权重研究</title>
+  <link rel="stylesheet" href="/css/style.css" />
+  <style>
+    /* 可视化页专用样式 */
+    .viz-toolbar { position: sticky; top: 58px; z-index: 40; background: var(--surface); border-bottom: 1px solid var(--line); box-shadow: 0 2px 6px rgba(0,0,0,.04); }
+    .viz-toolbar .inner { max-width: 1180px; margin: 0 auto; padding: 10px 20px; display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; }
+    .viz-toolbar label { font-size: 13px; color: var(--ink-soft); margin-right: 4px; }
+    .viz-toolbar select, .viz-toolbar input[type=range] { font-size: 13px; }
+    .viz-toolbar select { padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: #fff; max-width: 300px; }
+    .viz-toolbar .chip { font-size: 12px; color: var(--ink-soft); }
+    .viz-toolbar .chip b { color: var(--accent); }
+    #loadBtn { background: var(--accent); color: #fff; border: none; border-radius: 999px; padding: 6px 18px; font-size: 13px; cursor: pointer; }
+    #loadBtn:disabled { opacity: .5; cursor: wait; }
+    .stage-pill { font-size: 12px; padding: 2px 10px; border-radius: 999px; background: #eee; }
+    .stage-pill.memorize { background: #dbe7ff; color: #1a4fd8; }
+    .stage-pill.circuit { background: #ffe7c7; color: #b45f06; }
+    .stage-pill.cleanup { background: #d8f5dd; color: #1d7a33; }
+
+    .panels { max-width: 1180px; margin: 0 auto; padding: 22px 20px 80px; }
+    .arch-card { background: #0e1016; color: #dfe3ea; border-radius: 14px; padding: 16px; overflow-x: auto; margin-bottom: 22px; }
+    .arch-card h2 { color: #fff; border: none; margin: 0 0 6px; font-size: 17px; }
+    .arch-card svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+    .arch-legend { font-size: 12px; color: #9aa3b2; }
+    /* —— 测试按钮 / 结果 —— */
+    .test-bar { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; margin-top: 14px; padding-top: 12px; border-top: 1px solid #232837; }
+    #testBtn { background: #2e8b66; color: #fff; border: none; border-radius: 999px; padding: 7px 18px; font-size: 13.5px; cursor: pointer; white-space: nowrap; }
+    #testBtn:disabled { opacity: .55; cursor: wait; }
+    .test-info { font-size: 12px; color: #9aa3b2; line-height: 1.6; }
+    .test-info b { color: #cfd6e0; }
+    .test-result { margin-top: 12px; border: 1px solid #2c3a32; border-radius: 10px; padding: 10px 12px; background: #12161d; font-size: 13px; }
+    .test-result .row { display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: flex-start; margin-top: 4px; }
+    .test-result .kv { display: flex; gap: 6px; align-items: center; }
+    .test-result .kv b { color: #dfe3ea; font-size: 13.5px; }
+    .test-result canvas { width: 100%; height: auto; background: #0e1016; border: 1px solid #262b36; border-radius: 6px; }
+    .chip-mini { background: #22272f; color: #9aa3b2; border-radius: 999px; padding: 1px 9px; font-size: 11px; }
+    .badge-ok { color: #6ee7a0; } .badge-no { color: #ff8a80; }
+    .top5 { margin: 2px 0 0; padding: 0; list-style: none; font-size: 12px; color: #cfd6e0; }
+    .top5 li { display: flex; gap: 8px; align-items: baseline; padding: 1px 0; }
+    .top5 .rk { color: #8a93a5; width: 14px; }
+    .top5 .cl { width: 40px; font-variant-numeric: tabular-nums; }
+    .top5 .lg { color: #9aa3b2; font-variant-numeric: tabular-nums; }
+    .top5 .prob { margin-left: auto; color: #57c08a; font-variant-numeric: tabular-nums; }
+    #mlpBtn { background: #4a6fc5; color: #fff; border: none; border-radius: 999px; padding: 7px 18px; font-size: 13.5px; cursor: pointer; white-space: nowrap; }
+    #mlpBtn:disabled { opacity: .55; cursor: wait; }
+    #logitsBtn { background: #8a5fc5; color: #fff; border: none; border-radius: 999px; padding: 7px 18px; font-size: 13.5px; cursor: pointer; white-space: nowrap; }
+    #logitsBtn:disabled { opacity: .55; cursor: wait; }
+    .sweep-result { margin-top: 12px; border: 1px solid #263a52; border-radius: 10px; padding: 10px 12px; background: #12161d; font-size: 13px; }
+    .sweep-result .row { display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: center; margin-top: 4px; }
+    .sweep-result .kv { display: flex; gap: 6px; align-items: center; }
+    .sweep-result .kv b { color: #dfe3ea; font-size: 13.5px; }
+    .sweep-result canvas { width: 100%; height: auto; background: #fff; border: 1px solid #262b36; border-radius: 6px; margin-top: 8px; }
+    .sweep-result select { font-size: 12.5px; padding: 2px 6px; background: #0e1016; color: #dfe3ea; border: 1px solid #2c3a52; border-radius: 6px; }
+    .l3-row { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 6px; }
+    .l3-col { flex: 1 1 0; min-width: 280px; }
+    .l3-col .sub { font-size: 12px; color: #9aa3b2; margin: 4px 0 2px; }
+
+    .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+    .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow); }
+    .panel h3 { margin: 0 0 10px; font-size: 15px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .panel canvas { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; background: #fff; image-rendering: pixelated; }
+    .panel .note { font-size: 12px; color: var(--ink-soft); margin-top: 6px; }
+    .matrix-picker { margin: 6px 0; }
+    .matrix-picker select { padding: 3px 6px; font-size: 12.5px; }
+    .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid #ccc; border-top-color: var(--accent); border-radius: 50%; animation: rot .8s linear infinite; vertical-align: -2px; }
+    @keyframes rot { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+<div id="progress"></div>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/">
+      <span class="logo">悟</span>
+      <span>顿悟现象研究 <small>· 模型可视化</small></span>
+    </a>
+    <nav class="main">
+      <a href="/paper-zh.html">论文中文翻译</a>
+      <a href="/paper.pdf" target="_blank">原文 PDF</a>
+      <a class="btn" href="/model.html">🧬 模型可视化</a>
+    </nav>
+  </div>
+</header>
+
+<!-- 控制条 -->
+<div class="viz-toolbar">
+  <div class="inner">
+    <span id="runWrap"><label for="runSel">实验</label><select id="runSel"></select></span>
+    <span><label for="seedSel">Seed</label><select id="seedSel"></select></span>
+    <span><label for="epSlider">阶段(epoch)</label><input type="range" id="epSlider" min="0" max="0" value="0" style="width:200px" />
+      <span class="chip" id="epLabel"></span></span>
+    <span class="stage-pill memorize" id="stagePill" style="display:none"></span>
+    <button id="loadBtn">载入权重</button>
+    <span id="dims" class="chip"></span>
+  </div>
+</div>
+
+<main class="panels">
+  <!-- 1) 网络结构图 -->
+  <section class="arch-card">
+    <h2>① 网络结构（论文主模型：单层 Transformer 解模加法 a + b mod P）</h2>
+    <svg id="archSvg" viewBox="0 0 1200 620" role="img" aria-label="网络结构示意"></svg>
+    <div class="arch-legend">token(114 种：0…112 与 “=”) × 3 位置 → EMBED(128×3) → ATTENTION(4 头) → MLP(128→512→128，圆圈=结点、线=权重、隐藏层含 ReLU) → UNEMBED → logits(113 类)。本图为结构示意，非按真实比例。</div>
+
+    <div class="test-bar">
+      <button id="testBtn" type="button">🧪 测试（前向推理）</button>
+      <button id="mlpBtn" type="button">🧠 MLP 循环</button>
+      <button id="logitsBtn" type="button">🔀 LOGITS 循环</button>
+      <span class="test-info">用<b>当前阶段已加载的权重</b>：测试=随机取 (a,b) 跑前向得 logits；MLP 循环=固定 a=0、扫 b，画<b>前 10 个 MLP 神经元</b>输出；LOGITS 循环=固定 a=0、扫 b，画 <b>第 1 个 logits 单元</b>。</span>
+    </div>
+    <div class="test-result" id="testResult" hidden>
+      <div class="row">
+        <span class="kv">样本 <b id="trIn">—</b></span>
+        <span class="kv">真值 c <b id="trC">—</b></span>
+        <span class="kv">预测 ĉ <b id="trPred">—</b></span>
+        <span class="kv">来源 <span class="chip-mini" id="trSrc">—</span></span>
+        <span class="kv">阶段 <span class="chip-mini" id="trStage">—</span></span>
+      </div>
+      <div class="row" style="gap: 8px 22px;">
+        <div style="flex:1; min-width:240px;">
+          <div style="font-size:12px; color:#8a93a5; margin-bottom:2px;">Top-5 logits</div>
+          <ul class="top5" id="trTop"></ul>
+        </div>
+        <canvas id="cTestLogits" width="1100" height="180" style="flex:2; min-width:340px;"></canvas>
+      </div>
+      <div style="font-size:12px;color:#8a93a5;margin-top:8px;">上图横轴 = 113 个输出类 c（0…112；金色下划线 = 真值，红色箭头 = argmax 预测），柱高 = logits 的相对大小（减去最大后指数归一，即 softmax 概率）。</div>
+    </div>
+
+    <div class="sweep-result" id="sweepResult" hidden>
+      <div class="row">
+        <span class="kv">MLP 神经元 <b id="swNeuron">#0</b></span>
+        <span class="kv">固定 <b>a = 0</b></span>
+        <span class="kv">b 扫描 <span class="chip-mini" id="swRange">—</span></span>
+        <span class="kv">阶段 <span class="chip-mini" id="swStage">—</span></span>
+      </div>
+      <canvas id="cMlpSweep" width="1100" height="320"></canvas>
+      <div style="font-size:12px;color:#8a93a5;margin-top:6px;">固定 a=0、扫 b（0…P−1）时，<b>前 10 个 MLP 神经元（下标 0…9）</b>各自经 ReLU 后的输出（2 列 × 5 行；每格标题 n_k，右上角 = 该神经元最大输出，虚线 = 0 基线）。</div>
+    </div>
+    <div class="sweep-result" id="logitsResult" hidden>
+      <div class="row">
+        <span class="kv">UNEMBED 单元 <select id="lgSel" title="选择要查看的 logits 输出类（0…P−1）"></select></span>
+        <span class="kv">固定 <b>a = 0</b></span>
+        <span class="kv">b 扫描 <span class="chip-mini" id="lgRange">—</span></span>
+        <span class="kv">阶段 <span class="chip-mini" id="lgStage">—</span></span>
+      </div>
+      <div style="margin:6px 0 2px; font-size:12px; color:#9aa3b2;">① 固定 a = 0 · 扫 b（0…P−1）</div>
+      <canvas id="cLogitsSweep" width="1100" height="360"></canvas>
+      <div style="font-size:12px;color:#8a93a5;margin-top:6px;">x = b，y = <b>下拉框所选输出类 c</b> 的 logit 值（可为负；虚线 = 0 基线，右上角 = y 范围）。</div>
+      <div style="margin:14px 0 2px; font-size:12px; color:#9aa3b2;">② 固定 b = 0 · 扫 a（0…P−1）</div>
+      <canvas id="cLogitsSweepA" width="1100" height="180"></canvas>
+      <div style="font-size:12px;color:#8a93a5;margin-top:6px;">x = a，y = 同一输出类 c 的 logit 值（虚线 = 0 基线，右上角 = y 范围）。</div>
+      <div style="margin:14px 0 2px; font-size:12px; color:#9aa3b2;">③ 完整曲面：z = logit<sub>c</sub>(a, b)（左 = 3D 可旋转 · 粗网格概览；右 = 2D 全分辨率热图）</div>
+      <div class="l3-row">
+        <div class="l3-col">
+          <div class="sub">3D 曲面 · 拖动旋转/俯仰，悬停看 (a,b)</div>
+          <canvas id="cLogits3D" width="1100" height="520"></canvas>
+          <div style="font-size:11px;color:#8a93a5;">对 ~29×29 网格取 logit<sub>c</sub> 作为 z 高度（①② 是它在 a=0 / b=0 边上的切片）。这种分辨率画不出只有 1 格宽的对角线，看到的是模型的周期性傅里叶结构；要看“预测为 c”的位置请用右边的 2D 全分辨率热图。</div>
+        </div>
+        <div class="l3-col">
+          <div class="sub">2D 热图 · x = a（0…P−1，→）· y = b（0…P−1，↓）· 逐点全分辨率（P×P）</div>
+          <div class="row" style="gap:6px 16px; margin:4px 0 2px; font-size:12px;">
+            <span class="kv">显示量
+              <select id="lgQty" title="选择热图要画哪个量">
+                <option value="prob">softmax 概率 p(c|a,b)（推荐）</option>
+                <option value="rel">相对 logit：logit_c − mean_c′ logit_c′</option>
+                <option value="raw">原始 logit（模型解的周期条纹）</option>
+              </select>
+            </span>
+            <span class="kv">分辨率 <span class="chip-mini" id="lgProg">—</span></span>
+          </div>
+          <canvas id="cLogitsHeat" width="600" height="546"></canvas>
+          <div id="heatNote" style="font-size:11px;color:#8a93a5;"></div>
+        </div>
+      </div>
+    </div>  </section>
+
+  <!-- 2) 权重面板 -->
+  <section class="grid2">
+    <div class="panel">
+      <h3>Embedding W<sub>E</sub> <span class="chip">token_embed [114×128]</span></h3>
+      <canvas id="cWE" width="912" height="304"></canvas>
+      <div class="note">行为 token(0…112 与 “=”)，列为残差流维。热图颜色=权重符号与大小。</div>
+    </div>
+    <div class="panel">
+      <h3>W<sub>E</sub> 的傅里叶范数 <span class="chip">在值轴上做 DFT 后的稀疏度</span></h3>
+      <canvas id="cWEf" width="912" height="240"></canvas>
+      <div class="note">顿悟后应集中在少数“关键频率”上（类似论文图 3）。</div>
+    </div>
+    <div class="panel">
+      <h3>神经元-输出映射 W<sub>L</sub>=W<sub>U</sub>·W<sub>out</sub> <span class="chip">[113×512]</span></h3>
+      <canvas id="cWL" width="912" height="240"></canvas>
+      <div class="note">行=输出类别(0…112)，列=MLP 神经元。</div>
+    </div>
+    <div class="panel">
+      <h3>W<sub>L</sub> 的傅里叶范数 <span class="chip">稀疏度信号</span></h3>
+      <canvas id="cWLf" width="912" height="240"></canvas>
+    </div>
+    <div class="panel" style="grid-column: 1 / -1;">
+      <h3>注意力头矩阵 <span class="chip">选择要查看的 head 与矩阵</span>
+        <span class="matrix-picker">
+          <select id="headSel"></select>
+          <select id="matSel">
+            <option value="W_Q">W_Q (Q 投影) [128×32]</option>
+            <option value="W_K">W_K (K 投影) [128×32]</option>
+            <option value="W_V">W_V (V 投影) [128×32]</option>
+            <option value="W_O">W_O (输出投影) [32×128]</option>
+          </select>
+        </span>
+      </h3>
+      <canvas id="cHead" width="912" height="240"></canvas>
+    </div>
+    <div class="panel" style="grid-column: 1 / -1;">
+      <h3>MLP 权重 <span class="chip">Win [512×128]（行=神经元）与 Wout [128×512]（行=残差维）</span></h3>
+      <div style="display:flex; gap:14px; flex-wrap:wrap;">
+        <div><div class="note">W_in</div><canvas id="cWin" width="912" height="180"></canvas></div>
+        <div><div class="note">W_out</div><canvas id="cWout" width="912" height="180"></canvas></div>
+      </div>
+    </div>
+    <div class="panel" style="grid-column: 1 / -1;">
+      <h3>训练曲线 <span class="chip">点击/拖动选择阶段（红色竖线 = 当前查看的 epoch）</span></h3>
+      <canvas id="cCurve" width="1100" height="300"></canvas>
+    </div>
+  </section>
+</main>
+
+<footer class="site">
+  <div class="wrap" style="padding-bottom: 0;">
+    <div>模型权重快照由 python/ 训练时周期导出（viz-data）。尚未生成中间阶段的 seed 只显示“最终”一档。</div>
+    <div class="api-line" id="api-line">…</div>
+  </div>
+</footer>
+<button id="toTop" aria-label="回到顶部">↑</button>
+<script src="/js/main.js"></script>
+<script src="/js/model.js"></script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "grokking-paper-web-server",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "静态站点 + 轻量 API 服务器：直接以 TypeScript 源码运行（Node >= 24 原生 type stripping）",
+  "scripts": {
+    "start": "node index.ts",
+    "dev": "node --watch index.ts",
+    "typecheck": "npx tsc --noEmit --allowImportingTsExtensions index.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  }
+}
