@@ -170,6 +170,50 @@
     return norms;
   }
 
+  /** 一维实信号的傅里叶级数（P 为素数时与 DFT 完全等价）：
+   *    y[n] ≈ c0 + Σ_k [ a_k cos(2πkn/P) + b_k sin(2πkn/P) ]，k = 1…⌊P/2⌋
+   *  返回 { c0, comps:[{k,a,b,amp}], K, energy }（energy = 去掉直流后的总能量）。
+   */
+  function fourierSeries(y, p) {
+    let c0 = 0;
+    for (let n = 0; n < p; n++) c0 += y[n];
+    c0 /= p;
+    let energy = 0;
+    for (let n = 0; n < p; n++) energy += (y[n] - c0) * (y[n] - c0);
+
+    const K = Math.floor(p / 2);
+    const comps = [];
+    for (let k = 1; k <= K; k++) {
+      let a = 0, b = 0;
+      for (let n = 0; n < p; n++) {
+        const th = (2 * Math.PI * k * n) / p;
+        a += y[n] * Math.cos(th);
+        b += y[n] * Math.sin(th);
+      }
+      a *= 2 / p; b *= 2 / p;
+      comps.push({ k, a, b, amp: Math.hypot(a, b) });
+    }
+    return { c0, comps, K, energy };
+  }
+
+  /** 只用 keep 里的频率重建信号（直流分量恒保留）。 */
+  function rebuildFromFreqs(series, p, keep) {
+    const out = new Float64Array(p).fill(series.c0);
+    for (const c of series.comps) {
+      if (!keep.has(c.k)) continue;
+      for (let n = 0; n < p; n++) {
+        const th = (2 * Math.PI * c.k * n) / p;
+        out[n] += c.a * Math.cos(th) + c.b * Math.sin(th);
+      }
+    }
+    return out;
+  }
+
+  /** 幅度最大的前 N 个频率（按 k 升序返回）。 */
+  function topFreqs(series, N) {
+    return series.comps.slice().sort((x, z) => z.amp - x.amp).slice(0, N).sort((x, z) => x.k - z.k);
+  }
+
   // ===================================================================
   // 全局状态
   // ===================================================================
@@ -186,7 +230,9 @@
     testKey: null,
     lastTest: null,    // 最近一次测试的 {a,b,c,src}（切阶段后用它按新权重重算）
     gen: 0,            // 阶段选择序号，用于丢弃过期的异步刷新
-    l3d: null,         // 3D 曲面 {as3,bs3,g3,rot,tilt}（用于拖拽视角重绘）
+    freqSrc: null,     // 当前打开的频率视图：embed/attn/mlp/unembed/logits
+    freqPick: {},      // 每级自动挑中的“最正弦”维度/类别（换权重后清空）
+    archStage: null,   // 结构图上高亮的级（与按钮/面板同步）
   };
 
   // ===================================================================
@@ -204,20 +250,24 @@
     // ---- 横向等距布局：5 个部件，块间空隙固定 ----
     const GAP = 64;
     const X0 = 20;
-    const wIn = 210, wEmb = 140, wAtt = 270, wMlp = 330, wUn = 58;
+    const wIn = 210, wEmb = 140, wAtt = 270, wMlp = 330, wUn = 130, wLog = 76;
     const inX = X0;
     const embX = inX + wIn + GAP;
     const attX = embX + wEmb + GAP;
     const mlpX = attX + wAtt + GAP;
     const unX = mlpX + wMlp + GAP;
+    const logX = unX + wUn + GAP;
     const inCx = inX + wIn / 2, embCx = embX + wEmb / 2, attCx = attX + wAtt / 2,
-          mlpCx = mlpX + wMlp / 2, unCx = unX + wUn / 2;
+          mlpCx = mlpX + wMlp / 2, unCx = unX + wUn / 2, logCx = logX + wLog / 2;
     const AY = 310;                        // 箭头/数据流所在的水平线
-    const W = unX + wUn + 40;              // 视口总宽（自动适配）
+    const W = logX + wLog + 40;            // 视口总宽（自动适配）
 
     let s = `<defs>
       <marker id="arr" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto">
         <path d="M0,0 L9,4.5 L0,9 Z" fill="#8b2f2f"/>
+      </marker>
+      <marker id="arrL" markerWidth="9" markerHeight="9" refX="1" refY="4.5" orient="auto">
+        <path d="M9,0 L0,4.5 L9,9 Z" fill="#c3a1ee"/>
       </marker>
       <linearGradient id="bx" x1="0" y1="0" x2="1" y2="0">
         <stop offset="0" stop-color="#2b2f3a"/><stop offset="1" stop-color="#3a3f52"/>
@@ -230,7 +280,7 @@
     s += `<g transform="translate(0,${VS})">`;
 
     // 箭头（每段等长 GAP）
-    const arrows = [[inX + wIn, embX], [embX + wEmb, attX], [attX + wAtt, mlpX], [mlpX + wMlp, unX]];
+    const arrows = [[inX + wIn, embX], [embX + wEmb, attX], [attX + wAtt, mlpX], [mlpX + wMlp, unX], [unX + wUn, logX]];
     for (const [x1, x2] of arrows) {
       s += `<line x1="${x1}" y1="${AY}" x2="${x2}" y2="${AY}" stroke="#8b2f2f" stroke-width="2.4" marker-end="url(#arr)"/>`;
     }
@@ -250,7 +300,7 @@
     const gapCol = (wIn - 2 * padX - 3 * cw) / 2;
     const IO_TOP = 152, IO_BOT = 450;
     const cellH = (IO_BOT - IO_TOP) / NTOK;
-    s += `<g><rect x="${inX}" y="104" width="${wIn}" height="416" rx="8" fill="url(#bx)" stroke="#5b6172"/>`;
+    s += `<g data-stage="input"><rect x="${inX}" y="104" width="${wIn}" height="416" rx="8" fill="url(#bx)" stroke="#5b6172"/>`;
     s += lbl(inX + wIn / 2, 96, "输入 tokens：3 个 one-hot", 12.5, "#dfe3ea");
     for (let t = 0; t < 3; t++) {
       const cx = inX + padX + cw / 2 + t * (cw + gapCol);
@@ -272,41 +322,80 @@
     s += lbl(inX + wIn / 2, IO_BOT + 42, inCap, 10, hasS ? "#ffd57a" : "#9aa3b2");
     s += `</g>`;
 
-    // 2) EMBED
-    s += `<g><rect x="${embX}" y="150" width="${wEmb}" height="320" rx="10" fill="url(#bx)" stroke="#c0843c"/>`;
+    // 2) EMBED：3 个 one-hot（a / b / =）各查一行 W_E，得到 3 个 d 维向量
+    //    每个向量单独成组（data-vec），便于高亮到「某一个 token 的嵌入向量」而不是整块 EMBED
+    s += `<g data-stage="embed"><rect x="${embX}" y="150" width="${wEmb}" height="320" rx="10" fill="url(#bx)" stroke="#c0843c"/>`;
     s += lbl(embCx, 140, "EMBED", 13, "#c9a15c");
-    s += `<text x="${embCx}" y="300" fill="#dfe3ea" font-size="26" text-anchor="middle">W_E</text>`;
-    s += lbl(embCx, 330, "one-hot → " + d + " 维", 12);
-    s += lbl(embCx, 356, d + " × 3", 15, "#dfe3ea");
+    s += `<text x="${embCx}" y="180" fill="#dfe3ea" font-size="14" text-anchor="middle" font-family="monospace">W_E</text>`;
+    const embVecs = [
+      { key: "a", val: tokVals[0], col: "#ffd57a" },   // 位置1 的 token a
+      { key: "b", val: tokVals[1], col: "#9db4d0" },   // 位置2 的 token b
+      { key: "=", val: tokVals[2], col: "#9db4d0" },   // 位置3 的 '='
+    ];
+    const vX = embX + 18, vW = wEmb - 36, vH = 56, vTop = 200, vGap = 22, nBar = 12;
+    for (let i = 0; i < embVecs.length; i++) {
+      const v = embVecs[i], vy = vTop + i * (vH + vGap);
+      s += `<g data-vec="${v.key}">`;
+      s += `<rect x="${vX}" y="${vy}" width="${vW}" height="${vH}" rx="7" fill="#2a3145" stroke="#6b7385"/>`;
+      const bw = (vW - 16) / nBar;
+      for (let j = 0; j < nBar; j++) {                  // 小竖条 = 该向量 d 个分量的示意
+        const op = (0.22 + 0.68 * Math.abs(Math.sin(i * 2.1 + j * 1.7))).toFixed(2);
+        s += `<rect x="${(vX + 8 + j * bw).toFixed(1)}" y="${vy + 9}" width="${(bw - 2).toFixed(1)}" height="20" rx="1" fill="${v.col}" fill-opacity="${op}"/>`;
+      }
+      // 两行文字：名字左对齐、token 值右对齐，避免同一行挤在一起
+      s += `<text class="vecName" x="${vX + 8}" y="${vy + vH - 11}" fill="${v.col}" font-size="10.5" font-family="monospace">W_E[${v.key}]</text>`;
+      s += `<text x="${vX + vW - 8}" y="${vy + vH - 11}" fill="#9aa3b2" font-size="9.5" text-anchor="end" font-family="monospace">token ${v.val}</text>`;
+      s += `</g>`;
+    }
+    s += lbl(embCx, 452, `one-hot(${NTOK}) → ${d} 维`, 10.5);
     s += `</g>`;
 
     // 3) ATTENTION（4 头）
-    s += `<g><rect x="${attX}" y="70" width="${wAtt}" height="480" rx="12" fill="#1f2530" stroke="#7a5bb0"/>`;
+    //    头内部：Q/K/V → softmax(QKᵀ/√d)·V → out；4 个头的 out 再由右侧汇聚线收到 Σ 框。
+    //    最下面那个「Σ 4 头输出相加 → W_O 投影」才是频率视图分析的那一层（位置「=」的残差流增量）。
+    s += `<g data-stage="attn"><rect x="${attX}" y="70" width="${wAtt}" height="480" rx="12" fill="#1f2530" stroke="#7a5bb0"/>`;
     s += lbl(attCx, 55, `ATTENTION（${h} 头）`, 14, "#b18be0");
     const L = attX + 22;
     const HW = wAtt - 44;
-    const headH = 106, top0 = 100, gapV = 12;
+    const headH = 92, top0 = 88, gapV = 8;
+    const rail = L + HW + 12;                 // 右侧汇集线：把 4 个头的 out 收拢到 Σ 框
+    const sumY = 492, sumH = 44;
+    const taps = [];
     for (let i = 0; i < h; i++) {
       const yy = top0 + i * (headH + gapV);
       s += `<rect x="${L}" y="${yy}" width="${HW}" height="${headH}" rx="8" fill="#2a3040" stroke="#5b6172"/>`;
       s += `<text x="${L + 14}" y="${yy + 18}" fill="#9aa3b2" font-size="10">head ${i}</text>`;
-      const qx = L + 40, kx = L + 98, vx = L + 156, midY = yy + 52;
+      const qx = L + 40, kx = L + 98, vx = L + 156, midY = yy + 44;
       s += `<circle cx="${qx}" cy="${midY}" r="10" fill="#3f4763" stroke="#8a90a3"/>
             <circle cx="${kx}" cy="${midY}" r="10" fill="#3f4763" stroke="#8a90a3"/>
             <circle cx="${vx}" cy="${midY}" r="10" fill="#3f4763" stroke="#8a90a3"/>`;
       s += `<text x="${qx}" y="${midY + 5}" fill="#dfe3ea" font-size="11" text-anchor="middle">Q</text>
             <text x="${kx}" y="${midY + 5}" fill="#dfe3ea" font-size="11" text-anchor="middle">K</text>
             <text x="${vx}" y="${midY + 5}" fill="#dfe3ea" font-size="11" text-anchor="middle">V</text>`;
-      const mx = L + HW / 2, oy = midY + 26;
+      const mx = L + HW / 2, oy = midY + 24;
       s += `<line x1="${kx}" y1="${midY}" x2="${mx}" y2="${oy}" stroke="#b18be0" stroke-width="1.4"/>
             <line x1="${vx}" y1="${midY}" x2="${mx + 20}" y2="${oy}" stroke="#b18be0" stroke-width="1.4"/>`;
-      s += `<circle cx="${mx}" cy="${oy}" r="11" fill="none" stroke="#e0c25a" stroke-width="1.6"/>`;
-      s += `<text x="${mx}" y="${oy + 5}" fill="#e0c25a" font-size="13" text-anchor="middle">⊗</text>`;
-      s += `<text x="${L + HW - 8}" y="${yy + 20}" fill="#9aa3b2" font-size="9" text-anchor="end">softmax(QKᵀ/√d)</text>`;
-      s += `<rect x="${L + HW - 40}" y="${oy + 6}" width="34" height="16" rx="4" fill="#3f4763"/>
+      s += `<circle cx="${mx}" cy="${oy}" r="10" fill="none" stroke="#e0c25a" stroke-width="1.6"/>`;
+      s += `<text x="${mx}" y="${oy + 5}" fill="#e0c25a" font-size="12" text-anchor="middle">⊗</text>`;
+      s += `<text x="${L + HW - 8}" y="${yy + 18}" fill="#9aa3b2" font-size="9" text-anchor="end">softmax(QKᵀ/√d)</text>`;
+      s += `<rect x="${L + HW - 40}" y="${oy + 6}" width="34" height="15" rx="4" fill="#3f4763"/>
             <text x="${L + HW - 23}" y="${oy + 17}" fill="#dfe3ea" font-size="9" text-anchor="middle">out</text>`;
+      taps.push(oy + 13);                     // 该头 out 框的纵向中心
     }
-    s += lbl(attCx, 580, "每个头：softmax(QKᵀ/√d_head)·V，再 W_O 投影求和；d_head=" + (cfg ? cfg.d_head : 32), 11);
+    // 汇集线：每个头的 out → 右侧竖线 → 底部 Σ 框
+    for (const ty of taps) {
+      s += `<line x1="${L + HW - 6}" y1="${ty}" x2="${rail}" y2="${ty}" stroke="#c3a1ee" stroke-width="1.4"/>`;
+    }
+    s += `<line x1="${rail}" y1="${taps[0]}" x2="${rail}" y2="${sumY + sumH / 2}" stroke="#c3a1ee" stroke-width="1.4"/>`;
+    s += `<line x1="${rail}" y1="${sumY + sumH / 2}" x2="${L + HW}" y2="${sumY + sumH / 2}" stroke="#c3a1ee" stroke-width="1.6" marker-end="url(#arrL)"/>`;
+    // Σ 子层：频率视图（🎯 ATTENTION 频率）分析的就是这一层
+    s += `<g data-part="attnSum">`;
+    s += `<rect x="${L}" y="${sumY}" width="${HW}" height="${sumH}" rx="8" fill="#2a3040" stroke="#8a90a3"/>`;
+    s += `<text x="${L + 14}" y="${sumY + 19}" fill="#e0c25a" font-size="13">Σ</text>`;
+    s += `<text class="partName" x="${L + 32}" y="${sumY + 19}" fill="#dfe3ea" font-size="11">4 头输出相加 → W_O 投影</text>`;
+    s += `<text x="${L + 14}" y="${sumY + 35}" fill="#9aa3b2" font-size="9.5">残差流增量（位置「=」）· ${d} 维</text>`;
+    s += `</g>`;
+    s += lbl(attCx, 580, "每个头：softmax(QKᵀ/√d_head)·V（d_head=" + (cfg ? cfg.d_head : 32) + "）；4 头输出相加后由 W_O 投影回 " + d + " 维", 10.5);
     s += `</g>`;          // 关闭 ATTENTION 分组
     s += `</g>`;          // 关闭 translate（MLP 用绝对坐标、占满全高，下面单独画）
 
@@ -314,7 +403,7 @@
     //    boxY=70 / boxH=480：与上方 ATTENTION 完全等高、同顶（70→550）
     {
       const boxY = 70, boxH = 480;
-      s += `<g><rect x="${mlpX}" y="${boxY}" width="${wMlp}" height="${boxH}" rx="12" fill="url(#bx)" stroke="#2e8b66"/>`;
+      s += `<g data-stage="mlp"><rect x="${mlpX}" y="${boxY}" width="${wMlp}" height="${boxH}" rx="12" fill="url(#bx)" stroke="#2e8b66"/>`;
       s += lbl(mlpCx, boxY - 15, "MLP · 单隐层全连接", 13, "#57c08a");   // 标题在框上方，与 ATTENTION 标题同线
       s += lbl(mlpCx, boxY + 18, `${d} → ${m} → ${d}（+ReLU）`, 10.5);
 
@@ -341,41 +430,94 @@
         }
         return t;
       };
+      // 两个权重层各画一个虚框（mlpIn / mlpOutW）：只是标出层次与尺寸，不作为点亮目标
+      // （「MLP 频率」画的是 MLP 的输出激活，不是权重，见下面的 mlpOut）
+      // 尺寸按 PyTorch 的存法标注：nn.Linear(in, out).weight.shape = [out, in]（行=输出维）
+      const fTop = yTop - 40, fBot = yBot + 8;
+      for (const fr of [
+        { part: "mlpIn",   x1: xIn + 6,  x2: xHid - 6, title: `W_in ${m}×${d}`,  dir: `in ${d} → out ${m}`,  col: "#8fd0ff" },
+        { part: "mlpOutW", x1: xHid + 6, x2: xOut - 6, title: `W_out ${d}×${m}`, dir: `in ${m} → out ${d}`, col: "#a7e0b0" },
+      ]) {
+        const cx = (fr.x1 + fr.x2) / 2;
+        s += `<g data-part="${fr.part}">`;
+        s += `<rect x="${fr.x1}" y="${fTop}" width="${fr.x2 - fr.x1}" height="${fBot - fTop}" rx="8" fill="none" stroke="#3d4a63" stroke-dasharray="5 5"/>`;
+        s += `<text class="partName" x="${cx}" y="${fTop + 17}" fill="${fr.col}" font-size="10" text-anchor="middle" font-family="sans-serif">${fr.title}</text>`;
+        s += `<text x="${cx}" y="${fTop + 30}" fill="#7f8ba3" font-size="8.5" text-anchor="middle" font-family="sans-serif">${fr.dir}</text>`;
+        s += `</g>`;
+      }
+
       s += `<g stroke-linecap="round">${fan(xIn + 10, yIn, xHid - 10, yHid, "#8fd0ff")}${fan(xHid + 10, yHid, xOut - 10, yOut, "#a7e0b0")}</g>`;
 
       s += dotCol(xIn, yIn, 1.3, "#3f4763", "#9db4d0");
       s += dotCol(xHid, yHid, 0.6, "#1e7d46", "#8ae3a8");
-      s += dotCol(xOut, yOut, 1.3, "#4a4f78", "#c9a15c");
-
-      s += lbl((xIn + xHid) / 2, yTop - 16, "W_in", 10, "#8fd0ff");
-      s += lbl((xHid + xOut) / 2, yTop - 16, "W_out", 10, "#a7e0b0");
+      // MLP 的输出向量（= W_out·ReLU(…) + b_out，加回残差流的 128 维增量）单独成组：
+      // 「MLP 频率」画的就是这一列里的某一维，所以点亮的是它、而不是权重框
+      s += `<g data-part="mlpOut">`;
+      s += `<rect x="${xOut - 8}" y="${yTop - 10}" width="16" height="${(yBot - yTop + 20).toFixed(1)}" rx="8" fill="none" stroke="#3d4a63" stroke-dasharray="5 5"/>`;
+      s += `<g class="partHl">${dotCol(xOut, yOut, 1.3, "#4a4f78", "#c9a15c")}</g>`;
+      s += `</g>`;
       s += lbl(xIn, yBot + 22, `${d} 输入`, 10.5, "#dfe3ea");
       s += lbl(xHid, yBot + 22, `${m} 神经元 · ReLU`, 10.5, "#dfe3ea");
       s += lbl(xOut, yBot + 22, `${d} 输出`, 10.5, "#dfe3ea");
-      s += lbl(mlpCx, boxY + boxH - 14, "（输入/输出 128 与隐藏 512 各为单列；512 在 480 高内偏密，连线为部分示意）", 9);
+      s += lbl(mlpCx, boxY + boxH - 14, "（尺寸按 PyTorch 存法 = [输出维 × 输入维]；512 偏密，连线为部分示意）", 8.5);
       s += `</g>`;
     }
     // 重新平移：画 UNEMBED 等
     s += `<g transform="translate(0,${VS})">`;
-    // 5) UNEMBED + 输出
-    s += `<g><rect x="${unX}" y="120" width="${wUn}" height="380" rx="8" fill="url(#bx)" stroke="#c0843c"/>`;
+    // 5) 读出端：把 UNEMBED 的权重矩阵 W_U 与它读出的 logits 向量并排画，行高对齐
+    //    第 r 行 W_U[r] 与第 r 格 logit 是同一个输出类 —— 这样两个面板的区别一眼可见
+    const RD_TOP = 150, RD_H = 312, RD_ROW = RD_H / p;
+    const rdClass = (hasS && sample.c != null) ? sample.c : (aVal + bVal) % p;   // 真值类（金 = 真值）
+    // 5a) UNEMBED：W_U = [113 类 × 128 维]，一行 = 一个类的读出向量（**权重**，静态）
+    //     （权重视图已下线：UNEMBED 的“输出”就是 logits，由 📊 LOGITS 频率面板负责）
+    s += `<g data-stage="unembed"><rect x="${unX}" y="120" width="${wUn}" height="380" rx="8" fill="url(#bx)" stroke="#c0843c"/>`;
     s += lbl(unCx, 100, "UNEMBED", 11, "#c9a15c");
-    for (let yy = 150; yy <= 470; yy += 46) {
-      s += `<circle cx="${unCx}" cy="${yy}" r="5" fill="${yy === 340 ? '#d9a441' : '#556'}" stroke="#8a90a3"/>`;
+    s += lbl(unCx, 138, `W_U ${p} 类 × ${d} 维`, 9, "#9aa3b2");
+    {
+      const gx = unX + 8, gw = wUn - 50;
+      for (let r = 0; r < p; r++) {                 // 一行 = 一个输出类的读出向量
+        s += `<rect x="${gx}" y="${(RD_TOP + r * RD_ROW).toFixed(1)}" width="${gw}" height="${Math.max(1, RD_ROW - 0.6).toFixed(2)}" fill="#273149"/>`;
+      }
+      for (let i = 1; i < 4; i++) {                 // 细竖线：示意 128 个残差维（此处压成几列）
+        const vx = (gx + (gw * i) / 4).toFixed(1);
+        s += `<line x1="${vx}" y1="${RD_TOP}" x2="${vx}" y2="${RD_TOP + RD_H}" stroke="#3a4257" stroke-width="0.6"/>`;
+      }
+      const hatY = RD_TOP + rdClass * RD_ROW;       // 金 = 真值类：它在 W_U 里是哪一行
+      s += `<rect x="${gx - 3}" y="${(hatY - 1).toFixed(1)}" width="${gw + 6}" height="${(RD_ROW + 2).toFixed(1)}" rx="1.5" fill="#ffd57a" stroke="#ffd57a" stroke-width="0.6"/>`;
+      s += `<text x="${gx + gw + 6}" y="${(hatY + 3.4).toFixed(1)}" fill="#ffd57a" font-size="9" font-family="monospace">类 ${rdClass}</text>`;
+      s += lbl(unCx, 484, "每行 = 一个输出类的读出向量", 8, "#9aa3b2");
     }
-    s += lbl(unCx, 512, "logits", 12, "#dfe3ea");
-    s += lbl(unCx, 534, p + " 类", 10);
     s += `</g>`;       // 关闭 UNEMBED 分组
+    // 5b) logits：UNEMBED 读出的结果向量本身 = 113 个类的 logit（**激活**，取决于输入 a、b）
+    //     「LOGITS 频率」画的是所选输出类那一格随 b 的变化，所以点亮的是那一格
+    s += `<g data-stage="logits"><rect x="${logX}" y="120" width="${wLog}" height="380" rx="8" fill="url(#bx)" stroke="#c0843c"/>`;
+    s += lbl(logCx, 100, "logits", 11, "#c9a15c");
+    s += lbl(logCx, 138, `${p} 类`, 9, "#9aa3b2");
+    {
+      const gx = logX + 10, gw = wLog - 40;
+      for (let r = 0; r < p; r++) {                 // 一格 = 一个输出类的 logit（行高与 W_U 对齐）
+        const cy = (RD_TOP + r * RD_ROW).toFixed(1);
+        s += `<g data-part="logitsCell" data-idx="${r}">`;
+        s += `<rect x="${gx}" y="${cy}" width="${gw}" height="${Math.max(1, RD_ROW - 0.6).toFixed(2)}" fill="#273149"/>`;
+        s += `<text x="${gx + gw + 5}" y="${(RD_TOP + r * RD_ROW + RD_ROW - 0.4).toFixed(1)}" fill="#8fe3f2" font-size="8" font-family="monospace">${r}</text>`;
+        s += `</g>`;
+      }
+      const tY = RD_TOP + rdClass * RD_ROW;         // 同一个真值类，在这边是哪一格
+      s += `<rect x="${gx - 3}" y="${(tY - 1).toFixed(1)}" width="${gw + 6}" height="${(RD_ROW + 2).toFixed(1)}" rx="1.5" fill="none" stroke="#ffd57a" stroke-width="0.8"/>`;
+      s += lbl(logCx, 484, "每格 = 一类的 logit", 7.5, "#9aa3b2");
+    }
+    s += `</g>`;       // 关闭 logits 分组
     s += `</g>`;       // 关闭 translate 分组
 
     // 测试后的预测结果显示在输出端
     if (hasS && sample.pred != null) {
       const ok = !!sample.correct;
-      s += `<text x="${unCx}" y="566" fill="${ok ? '#6ee7a0' : '#ff8a80'}" font-size="12.5" text-anchor="middle" font-family="sans-serif">ĉ = ${sample.pred}${ok ? " ✓" : " ✗"}</text>`;
+      s += `<text x="${logCx}" y="566" fill="${ok ? '#6ee7a0' : '#ff8a80'}" font-size="12.5" text-anchor="middle" font-family="sans-serif">ĉ = ${sample.pred}${ok ? " ✓" : " ✗"}</text>`;
     }
 
     svg.innerHTML = s;
     svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    highlightArch(state.archStage || null);   // 重画（如测试会重建结构图）后恢复高亮
   }
 
   // ===================================================================
@@ -519,12 +661,11 @@
     await refreshPanels();
   }
 
-  /** 按新权重刷新仍在显示的临时结果（测试或 MLP 循环，二选一） */
+  /** 按新权重刷新仍在显示的临时结果（测试 / 频率视图，二选一） */
   async function refreshPanels() {
     if (!state.mats) return;
-    const lg = $("#logitsResult"), sw = $("#sweepResult"), tr = $("#testResult");
-    if (lg && !lg.hidden) { await runLogitsSweep(); return; }
-    if (sw && !sw.hidden) { await runMlpSweep(); return; }
+    const tr = $("#testResult"), ed = $("#freqResult");
+    if (ed && !ed.hidden && state.freqSrc) { await runFreqView(state.freqSrc); return; }
     if (tr && !tr.hidden && state.lastTest) { await runTest(state.lastTest); }
   }
 
@@ -539,8 +680,7 @@
       const buf = await resp.arrayBuffer();
       const { mats } = parseBin(buf);
       state.mats = mats;
-      state.grid = null;            // 权重换了 → 全分辨率网格/显示层缓存作废
-      state.heatField = null;
+      state.freqPick = {};          // 自动挑中的维度作废，下次打开重新挑
       matView();
     } catch (err) {
       console.error(err);
@@ -574,20 +714,71 @@
     const hs = $("#headSel");
     hs.innerHTML = "";
     for (let i = 0; i < idx.config.n_heads; i++) hs.add(new Option(`head ${i}`, String(i)));
-    // logits 输出类下拉（0…P−1），保留已有选择
-    const lgs = $("#lgSel");
-    if (lgs) {
-      const cur = lgs.value;
-      lgs.innerHTML = "";
-      for (let c = 0; c < idx.config.p; c++) lgs.add(new Option(String(c), String(c)));
-      lgs.value = (cur !== "" && Number(cur) < idx.config.p) ? cur : "0";
-    }
     selectEpoch(state.epochs[state.epochs.length - 1]);
   }
 
   // ===================================================================
   // 测试：取一个测试样本 → 前向传播 → logits
   // ===================================================================
+  /** 按钮下方那行说明：随当前打开的面板变化（key 与各面板一一对应；
+   *  freq:* 的文案在 setPanelInfo 里由 FREQ_SRC 现场拼出来，避免两处重复维护） */
+  const PANEL_INFO = {
+    none: "点上面的按钮运行，结果出现在下方面板（都用<b>当前阶段已加载的权重</b>计算）。" +
+          "4 个按钮沿数据流逐级看<b>频率</b>：EMBED → ATTENTION → MLP → LOGITS；" +
+          "切换按钮即切换视图，拖动 epoch 会用新权重自动重算。",
+    test: "<b>测试</b>：从该 seed 的测试集里随机取一组 (a, b) 跑一次前向，得到 113 个输出类的 logits，" +
+          "并把预测 ĉ 在结构图上点亮（金色下划线 = 真值）。",
+  };
+
+  function setPanelInfo(key) {
+    const el = $("#testInfo");
+    let txt = PANEL_INFO[key];
+    let btnId = key === "test" ? "testBtn" : null;
+    let stage = null;
+    if (!txt && key && key.startsWith("freq:")) {          // 频率视图：从 FREQ_SRC 取短文
+      const sp = FREQ_SRC[key.slice(5)];
+      if (sp) { txt = `<b>${sp.name}</b>：${sp.hint}`; btnId = sp.btn; stage = sp.stage; }
+    }
+    // 选中的按钮高亮（背景变亮）；无面板打开时全部取消
+    for (const b of document.querySelectorAll(".test-bar button")) b.classList.toggle("active", b.id === btnId);
+    highlightArch(stage);                                   // 结构图上同步高亮对应的一级
+    if (el) el.innerHTML = txt || PANEL_INFO.none;
+  }
+
+  /** stage → 该级里被“细化点亮”的子元素（由 FREQ_SRC[*].vec / .part 声明；运行时查，避免初始化顺序问题）
+   *  vec  = EMBED 里某条 token 嵌入向量（W_E[a]）
+   *  part = 层内某个具体子层（如 ATTENTION 里的「Σ 4 头输出 → W_O」） */
+  function stageFine(stage) {
+    if (!stage) return null;
+    for (const k of Object.keys(FREQ_SRC)) {
+      const sp = FREQ_SRC[k];
+      if (sp.stage === stage && (sp.vec || sp.part)) return { vec: sp.vec || null, part: sp.part || null };
+    }
+    return null;
+  }
+  function highlightArch(stage) {
+    state.archStage = stage || null;
+    const fine = stageFine(stage);
+    // LOGITS 是一整排格子（一格 = 一个输出类）：要跟着面板里选的输出类移动
+    let pickIdx = null;
+    if (fine && fine.part === "logitsCell") {
+      const sel = $("#freqSel");
+      if (sel && sel.value !== "") pickIdx = Number(sel.value);
+    }
+    for (const g of document.querySelectorAll("#archSvg g[data-stage]")) {
+      // 有细化子元素时不再整块高亮（EMBED → W_E[a]；ATTENTION → Σ 头输出；……）
+      g.classList.toggle("on", g.dataset.stage === stage && !fine);
+    }
+    for (const g of document.querySelectorAll("#archSvg g[data-vec]")) {
+      g.classList.toggle("on", !!fine && g.dataset.vec === fine.vec);
+    }
+    for (const g of document.querySelectorAll("#archSvg g[data-part]")) {
+      let on = !!fine && g.dataset.part === fine.part;
+      if (on && g.dataset.idx != null && pickIdx != null) on = Number(g.dataset.idx) === pickIdx;
+      g.classList.toggle("on", on);
+    }
+  }
+
   function clearTest() {
     state.sample = null;
     state.testList = null;
@@ -595,10 +786,10 @@
     state.lastTest = null;
     const r = $("#testResult");
     if (r) r.hidden = true;
-    const sw = $("#sweepResult");
-    if (sw) sw.hidden = true;
-    const lg = $("#logitsResult");
-    if (lg) lg.hidden = true;
+    const ed = $("#freqResult");
+    if (ed) ed.hidden = true;
+    state.freqSrc = null;
+    setPanelInfo("none");
   }
 
   /** 无 test_pairs.json 时的兜底：按 1-frac 概率接受，近似“留出”样本（可复现、非 numpy 精确划分） */
@@ -734,10 +925,18 @@
     return ws;
   }
 
-  /** 对外接口：返回本次前向的副本（可安全持有） */
+  /** 对外接口：返回本次前向的副本（可安全持有）
+   *  attn / mlp 都是位置「=」处加回残差流的增量向量（各 d 维），供“频率视图”逐级看谱。 */
   function forwardOne(a, b) {
     const ws = forwardCore(a, b);
-    return { logits: ws.logits.slice(), h: ws.h.slice() };
+    const d = state.cfg.d_model;
+    return {
+      logits: ws.logits.slice(),
+      h: ws.h.slice(),
+      attn: ws.acc.slice(2 * d, 3 * d),   // 4 个头在位置「=」的输出之和
+      mlp: ws.o.slice(),                  // MLP 输出（W_out·ReLU(...) + b_out）
+      resid: ws.x2.slice(),               // 最终残差流（位置「=」，含 pos/attn/mlp）
+    };
   }
 
   /** 画 logits 柱状图（金色=真值，蓝箭头=argmax） */
@@ -778,11 +977,10 @@
   async function runTest(force) {
     const btn = $("#testBtn");
     if (!state.cfg || !state.epochs || state.epochs.length === 0) return;
-    // 互斥：点“测试”时隐藏 MLP 循环与 LOGITS 面板
-    const swX = $("#sweepResult");
-    if (swX) swX.hidden = true;
-    const lgX = $("#logitsResult");
-    if (lgX) lgX.hidden = true;
+    // 互斥：点“测试”时隐藏频率视图面板
+    const edX = $("#freqResult");
+    if (edX) edX.hidden = true;
+    setPanelInfo("test");
     if (!state.mats) {
       const ep = state.loadedEpoch != null ? state.loadedEpoch : state.epochs[state.epochs.length - 1];
       await loadWeights(ep);
@@ -843,547 +1041,461 @@
   }
 
   // ===================================================================
-  // MLP 循环：固定 a=0，扫 b=0…P-1；一次画出前 10 个神经元的输出（2 列 × 5 行）
+  // 频率视图的三张图（被五级视图共用）：① 波形 vs 重建 ② 频谱 ③ 拆解与叠加
   // ===================================================================
-  function drawSweepGrid(canvas, p, rows, lbl = "n") {
-    // rows[i][b] = 第 i 个单元在 (a=0, b) 的输出（lbl 用于小图标题前缀，如 n/c）
-    const W = 1100, H = 770;
+  /** ① 原始曲线（淡蓝）vs 只用前 N 个频率重建的曲线（橙） */
+  function drawEmbedWave(canvas, p, y, yrec, info) {
+    const W = 1100, H = 300;
     canvas.width = W; canvas.height = H;
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
-    const n = rows.length;
-    const cols = 2;
-    const nRows = Math.ceil(n / cols);
-    const L = 12, R = 12, T = 6, B = 34;
-    const gapC = 24, gapR = 12;
-    const cw = (W - L - R - gapC * (cols - 1)) / cols;
-    const ch = (H - T - B - gapR * (nRows - 1)) / nRows;
-    const mT = 18;                              // 单元内顶部（标题/幅值）留白
-    const colors = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd", "#ff7f0e",
-                    "#17becf", "#e377c2", "#bcbd22", "#7f7f7f", "#8c564b"];
-    const fmtY = (v) => {
-      if (v === 0) return "0";
-      const a = Math.abs(v);
-      if (a < 0.01) return v.toExponential(1);
-      return v.toFixed(2);
-    };
-    ctx.font = "11px sans-serif";
-    for (let k = 0; k < n; k++) {
-      const c = k % cols, r = (k / cols) | 0;
-      const ox = L + c * (cw + gapC), oy = T + r * (ch + gapR);
-      const pw = cw - 14, ph = ch - mT - 6;
-      const X = (b) => ox + 10 + (pw * b) / (p - 1);
-      let vmax = -Infinity, vmin = Infinity;
-      for (let b = 0; b < p; b++) {
-        const v = rows[k][b];
-        if (v > vmax) vmax = v;
-        if (v < vmin) vmin = v;
-      }
-      if (vmin > 0) vmin = 0;                    // 全为正（如 ReLU 激活）：下限贴 0 基线
-      if (!isFinite(vmin) || vmax <= vmin) { vmin = 0; vmax = Math.max(vmax, 1); }
-      const Y = (v) => oy + mT + ph - (ph * (v - vmin)) / (vmax - vmin);
-      const baseY = Y(0);
-      // 单元边框 + 网格
-      ctx.strokeStyle = "#e8eaef"; ctx.lineWidth = 1;
-      ctx.strokeRect(ox, oy, cw, ch);
-      ctx.strokeStyle = "#eef0f4";
-      for (let g = 1; g < 4; g++) {
-        const gy = oy + mT + (ph * g) / 4;
-        ctx.beginPath(); ctx.moveTo(X(0), gy); ctx.lineTo(X(p - 1), gy); ctx.stroke();
-      }
-      ctx.strokeStyle = "#c9ced7"; ctx.setLineDash([3, 3]);
-      ctx.beginPath(); ctx.moveTo(X(0), baseY); ctx.lineTo(X(p - 1), baseY); ctx.stroke();
-      ctx.setLineDash([]);
-      // 曲线
-      ctx.strokeStyle = colors[k % colors.length]; ctx.lineWidth = 1.6;
-      ctx.beginPath();
-      for (let b = 0; b < p; b++) {
-        const px = X(b), py = Y(rows[k][b]);
-        b ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
-      }
-      ctx.stroke();
-      // 标题（单元下标）+ 最大/最小
-      ctx.fillStyle = "#2a2f3a"; ctx.font = "bold 12px sans-serif"; ctx.textAlign = "left";
-      ctx.fillText(`${lbl}${k}`, ox + 8, oy + 13);
-      ctx.fillStyle = "#8a93a5"; ctx.font = "10px sans-serif"; ctx.textAlign = "right";
-      const rangeTxt = fmtY(vmax) + (vmin < 0 ? " / " + fmtY(vmin) : "");
-      ctx.fillText(rangeTxt, ox + cw - 8, oy + 13);
-      // 仅最底行的 x 轴标 b
-      if (r === nRows - 1) {
-        ctx.fillStyle = "#8a93a5"; ctx.font = "10px sans-serif"; ctx.textAlign = "center";
-        const tick = Math.max(1, Math.ceil(p / 8));
-        for (let b = 0; b < p; b += tick) ctx.fillText(String(b), X(b), oy + ch + 12);
-        ctx.fillText(String(p - 1), X(p - 1), oy + ch + 12);
-      }
-    }
-    ctx.fillStyle = "#333"; ctx.font = "12px sans-serif"; ctx.textAlign = "right";
-    ctx.fillText("b →", W - R - 2, H - 8);
-  }
-
-  async function runMlpSweep() {
-    const btn = $("#mlpBtn");
-    if (!state.cfg || !state.epochs || state.epochs.length === 0) return;
-    // 互斥：点“MLP 循环”时隐藏测试与 LOGITS 面板
-    const trX = $("#testResult");
-    if (trX) trX.hidden = true;
-    const lgX = $("#logitsResult");
-    if (lgX) lgX.hidden = true;
-    if (!state.mats) {
-      const ep = state.loadedEpoch != null ? state.loadedEpoch : state.epochs[state.epochs.length - 1];
-      await loadWeights(ep);
-    }
-    if (!state.mats) { alert("请先载入权重（点上方“载入权重”）"); return; }
-    btn.disabled = true; btn.innerHTML = "扫描中…";
-    try {
-      const p = state.cfg.p;
-      const N = Math.min(10, state.cfg.n_mlp || 512);   // 画前 10 个神经元
-      const rows = Array.from({ length: N }, () => new Float64Array(p));
-      for (let b = 0; b < p; b++) {
-        const { h } = forwardOne(0, b);        // a=0 固定，b 扫描
-        for (let i = 0; i < N; i++) rows[i][b] = h[i];
-      }
-      $("#swNeuron").textContent = `#0…#${N - 1}（前 ${N} 个）`;
-      $("#swRange").textContent = `b = 0 … ${p - 1}（共 ${p} 个）`;
-      const st = stageOf(state.loadedEpoch);
-      $("#swStage").textContent = `${state.loadedEpoch} 步${st ? " · " + st : ""}`;
-      $("#sweepResult").hidden = false;
-      drawSweepGrid($("#cMlpSweep"), p, rows);
-    } catch (err) {
-      console.error(err);
-      alert(`MLP 循环失败：${err.message}`);
-    } finally {
-      btn.disabled = false; btn.innerHTML = "🧠 MLP 循环";
-    }
-  }
-
-  // ===================================================================
-  // LOGITS 循环：固定 a=0，扫 b，画第 1 个 logits 单元（输出类 0）的单条大图
-  // ===================================================================
-  function drawSingleSweep(canvas, p, ys, label, xLabel = "b") {
-    const W = 1100, H = 180;          // 高度减半（360 → 180）
-    canvas.width = W; canvas.height = H;
-    const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
-    const L = 54, R = 14, T = 20, B = 30;
+    const L = 66, R = 16, T = 28, B = 40;
     const pw = W - L - R, ph = H - T - B;
-    let vmin = Infinity, vmax = -Infinity;
-    for (let b = 0; b < p; b++) { const v = ys[b]; if (v < vmin) vmin = v; if (v > vmax) vmax = v; }
-    if (!isFinite(vmin)) { vmin = 0; vmax = 1; }
-    const lo = Math.min(0, vmin), hi = Math.max(0, vmax);
-    const lo2 = lo, hi2 = hi === lo ? hi + 1 : hi;
-    const X = (b) => L + (pw * b) / (p - 1);
-    const Y = (v) => T + ph - ((ph * (v - lo2)) / (hi2 - lo2));
-    const fmt = (v) => { if (v === 0) return "0"; const a = Math.abs(v); if (a < 0.01) return v.toExponential(1); return v.toFixed(2); };
-    ctx.strokeStyle = "#e6e8ee"; ctx.lineWidth = 1;
-    for (let g = 0; g <= 4; g++) { const gy = T + (ph * g) / 4; ctx.beginPath(); ctx.moveTo(L, gy); ctx.lineTo(W - R, gy); ctx.stroke(); }
-    ctx.strokeStyle = "#c9ced7"; ctx.setLineDash([4, 4]);
-    ctx.beginPath(); ctx.moveTo(L, Y(0)); ctx.lineTo(W - R, Y(0)); ctx.stroke(); ctx.setLineDash([]);
-    ctx.strokeStyle = "#8a5fc5"; ctx.lineWidth = 2.2;
-    ctx.beginPath();
-    for (let b = 0; b < p; b++) { const px = X(b), py = Y(ys[b]); b ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }
-    ctx.stroke();
-    ctx.fillStyle = "#57606a"; ctx.font = "11px sans-serif"; ctx.textAlign = "right";
-    for (let g = 0; g <= 4; g++) { const v = hi2 - ((hi2 - lo2) * g) / 4; ctx.fillText(fmt(v), L - 6, T + (ph * g) / 4 + 4); }
-    ctx.textAlign = "center";
+    let vmin = 0, vmax = 0;
+    for (let n = 0; n < p; n++) {
+      vmax = Math.max(vmax, y[n], yrec[n]);
+      vmin = Math.min(vmin, y[n], yrec[n]);
+    }
+    if (vmax - vmin < 1e-12) vmax = vmin + 1;
+    const X = (n) => L + (pw * n) / (p - 1);
+    const Y = (v) => T + ph - ((ph * (v - vmin)) / (vmax - vmin));
+    const fmt = (v) => (v === 0 ? "0" : Math.abs(v) < 0.01 ? v.toExponential(1) : v.toFixed(3));
+
+    ctx.strokeStyle = "#eef0f4"; ctx.lineWidth = 1;
+    for (let g = 0; g <= 4; g++) {
+      const gy = T + (ph * g) / 4;
+      ctx.beginPath(); ctx.moveTo(L, gy); ctx.lineTo(W - R, gy); ctx.stroke();
+    }
+    ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif"; ctx.textAlign = "right";
+    for (let g = 0; g <= 4; g++) {
+      const v = vmax - ((vmax - vmin) * g) / 4;
+      ctx.fillText(fmt(v), L - 8, T + (ph * g) / 4 + 4);
+    }
+    if (vmin < 0 && vmax > 0) {                     // 0 基线
+      ctx.strokeStyle = "#c9ced7"; ctx.setLineDash([4, 4]);
+      ctx.beginPath(); ctx.moveTo(L, Y(0)); ctx.lineTo(W - R, Y(0)); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    const line = (arr, color, width) => {
+      ctx.strokeStyle = color; ctx.lineWidth = width;
+      ctx.beginPath();
+      for (let n = 0; n < p; n++) { const px = X(n), py = Y(arr[n]); n ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }
+      ctx.stroke();
+    };
+    line(y, "#9db4cc", 1.4);                        // 原始
+    line(yrec, "#e07b1a", 2.2);                     // 重建
+
+    // 标题 + 内联图例（图例接在标题后面，避免和 x 轴刻度抢位置）
+    ctx.textAlign = "left"; ctx.fillStyle = "#2a2f3a"; ctx.font = "bold 12px sans-serif";
+    const title = `${info.qty}（第 ${info.c} 项）· ${info.xAxis} 0…${p - 1}`;
+    ctx.fillText(title, L, 17);
+    let lx = L + ctx.measureText(title).width + 18;
+    const legLabel = `原始 ${info.qty}`;
+    ctx.strokeStyle = "#9db4cc"; ctx.lineWidth = 1.4;
+    ctx.beginPath(); ctx.moveTo(lx, 13); ctx.lineTo(lx + 24, 13); ctx.stroke();
+    ctx.fillStyle = "#57606a"; ctx.font = "11px sans-serif";
+    ctx.fillText(legLabel, lx + 29, 17);
+    lx += 29 + ctx.measureText(legLabel).width + 16;
+    ctx.strokeStyle = "#e07b1a"; ctx.lineWidth = 2.2;
+    ctx.beginPath(); ctx.moveTo(lx, 13); ctx.lineTo(lx + 24, 13); ctx.stroke();
+    ctx.fillStyle = "#57606a";
+    ctx.fillText("只用前 N 个频率重建", lx + 29, 17);
+
+    ctx.textAlign = "right"; ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif";
+    ctx.fillText(`保留 k = ${info.topN.map((t) => t.k).join(", ")} · 残差 RMS ${fmt(info.rms)}（占能量 ${info.errPct.toFixed(2)}%）`,
+      W - R, 17);
+
+    ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif";
     const tick = Math.max(1, Math.ceil(p / 16));
-    for (let b = 0; b < p; b += tick) ctx.fillText(String(b), X(b), H - B + 16);
-    ctx.fillText(String(p - 1), X(p - 1), H - B + 16);
-    ctx.fillStyle = "#2a2f3a"; ctx.font = "bold 13px sans-serif"; ctx.textAlign = "left";
-    ctx.fillText(label, 6, 16);
-    ctx.fillStyle = "#888"; ctx.font = "11px sans-serif"; ctx.textAlign = "right";
-    ctx.fillText(`${fmt(hi2)} / ${fmt(lo2)}`, W - R, 16);
-    ctx.fillStyle = "#333"; ctx.font = "12px sans-serif"; ctx.textAlign = "right";
-    ctx.fillText(`${xLabel} →`, W - R - 16, H - 6);
+    for (let n = 0; n < p; n += tick) {
+      const isLast = n + tick >= p;                 // 末刻度右对齐，避免和右边界/轴名相撞
+      ctx.textAlign = isLast ? "right" : "center";
+      ctx.fillText(String(n), isLast ? W - R : X(n), T + ph + 18);
+    }
+    ctx.textAlign = "right"; ctx.fillStyle = "#333"; ctx.font = "12px sans-serif";
+    ctx.fillText(`${info.xAxis} →`, W - R, H - 5);
   }
 
-  /** 3D 曲面：x=a、y=b、z=logit_c(a,b)。rot° 绕垂直轴旋转、tilt 控制竖直俯仰 */
-  function drawLogits3D(canvas, as3, bs3, g3, rotDeg, tilt) {
-    const W = 1100, H = 520;
+  /** ② 频率谱：柱高 = |c_k|，红 = 被保留的频率 */
+  function drawEmbedSpec(canvas, p, series, keep) {
+    const W = 1100, H = 220;
     canvas.width = W; canvas.height = H;
     const ctx = canvas.getContext("2d");
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
-    const ny = as3.length, nx = bs3.length;
-    const amax = as3[ny - 1], bmax = bs3[nx - 1];
-    let zmin = Infinity, zmax = -Infinity;
-    for (let i = 0; i < g3.length; i++) { const z = g3[i]; if (z < zmin) zmin = z; if (z > zmax) zmax = z; }
-    if (!isFinite(zmin)) { zmin = 0; zmax = 1; }
-    const rng = zmax - zmin || 1;
-    const c30 = Math.cos(Math.PI / 6);
-    const th = rotDeg * Math.PI / 180, ct = Math.cos(th), st = Math.sin(th);
-    // 屏幕基：a→右下方、b→左下方，绕屏幕法线转 rot°，tilt 压扁竖直方向
-    const ea0x = c30, ea0y = 0.5, eb0x = -c30, eb0y = 0.5;
-    const ea = { x: ea0x * ct - ea0y * st, y: (ea0x * st + ea0y * ct) * tilt };
-    const eb = { x: eb0x * ct - eb0y * st, y: (eb0x * st + eb0y * ct) * tilt };
-    const X = (a, b) => a * ea.x + b * eb.x;
-    const Yb = (a, b) => a * ea.y + b * eb.y;
-    const hh = 170;
-    const Y = (a, b, z) => Yb(a, b) - ((z - zmin) / rng) * hh;
-    // 自动缩放与居中（考虑 z 高度）
-    let minx = Infinity, maxx = -Infinity, miny = Infinity, maxy = -Infinity;
-    const upd = (a, b, z) => { const x = X(a, b), y = Y(a, b, z); if (x < minx) minx = x; if (x > maxx) maxx = x; if (y < miny) miny = y; if (y > maxy) maxy = y; };
-    for (const a of [0, amax]) for (const b of [0, bmax]) { upd(a, b, zmin); upd(a, b, zmax); }
-    const spanX = (maxx - minx) || 1, spanY = (maxy - miny) || 1;
-    const S = Math.min((W - 150) / spanX, (H - 110) / spanY, 2.9);
-    const ox = (W - (minx + maxx) * S) / 2;
-    const oy = (H - (miny + maxy) * S) / 2;
-    if (state.l3d) state.l3d.lastView = { ea, eb, ox, oy, S, amax, bmax };   // 供悬停反投影
-    const PX = (a, b, z) => [ox + X(a, b) * S, oy + Y(a, b, z) * S];
-    // painter：按基面竖直坐标排序，远(小)先画
-    const cells = [];
-    for (let ia = 0; ia < ny - 1; ia++) for (let ib = 0; ib < nx - 1; ib++) {
-      const a0 = as3[ia], a1 = as3[ia + 1], b0 = bs3[ib], b1 = bs3[ib + 1];
-      const zm = (g3[ia * nx + ib] + g3[(ia + 1) * nx + ib] + g3[(ia + 1) * nx + ib + 1] + g3[ia * nx + ib + 1]) / 4;
-      cells.push({ ia, ib, zm, d: Yb((a0 + a1) / 2, (b0 + b1) / 2) });
+    const L = 66, R = 16, T = 26, B = 38;
+    const pw = W - L - R, ph = H - T - B;
+    const comps = series.comps, K = comps.length;
+    let maxA = 1e-12;
+    for (const c of comps) maxA = Math.max(maxA, c.amp);
+    const bw = pw / K;
+    const X = (i) => L + i * bw;
+
+    ctx.strokeStyle = "#eef0f4"; ctx.lineWidth = 1;
+    for (let g = 0; g <= 4; g++) {
+      const gy = T + (ph * g) / 4;
+      ctx.beginPath(); ctx.moveTo(L, gy); ctx.lineTo(W - R, gy); ctx.stroke();
     }
-    cells.sort((p, q) => p.d - q.d);
-    const amp = Math.max(Math.abs(zmin), Math.abs(zmax)) || 1;
-    const col = (v) => { const t = Math.min(1, Math.max(0, (v / amp + 1) / 2)); const rgb = divergingRGB(t); return `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`; };
-    for (const c of cells) {
-      const a0 = as3[c.ia], a1 = as3[c.ia + 1], b0 = bs3[c.ib], b1 = bs3[c.ib + 1];
-      const z00 = g3[c.ia * nx + c.ib], z10 = g3[(c.ia + 1) * nx + c.ib],
-            z11 = g3[(c.ia + 1) * nx + c.ib + 1], z01 = g3[c.ia * nx + c.ib + 1];
-      ctx.beginPath();
-      ctx.moveTo(...PX(a0, b0, z00)); ctx.lineTo(...PX(a1, b0, z10));
-      ctx.lineTo(...PX(a1, b1, z11)); ctx.lineTo(...PX(a0, b1, z01));
-      ctx.closePath();
-      ctx.fillStyle = col(c.zm); ctx.fill();
-      ctx.strokeStyle = "rgba(25,28,38,0.18)"; ctx.lineWidth = 0.6; ctx.stroke();
+    for (let i = 0; i < K; i++) {
+      const c = comps[i];
+      const h = (ph * c.amp) / maxA;
+      const on = keep.has(c.k);
+      ctx.fillStyle = on ? "#d64541" : "#b9c8dc";
+      ctx.fillRect(X(i) + 1, T + ph - h, Math.max(1.5, bw - 2), h);
+      if (on) {
+        ctx.fillStyle = "#b0332f"; ctx.font = "bold 11px sans-serif"; ctx.textAlign = "center";
+        ctx.fillText(String(c.k), X(i) + bw / 2, T + ph - h - 5);
+      }
     }
-    // 坐标轴（地面 z=zmin）
-    ctx.font = "13px sans-serif"; ctx.textAlign = "center";
-    ctx.strokeStyle = "#555"; ctx.lineWidth = 1.6; ctx.fillStyle = "#333";
-    const [x0, y0] = PX(0, 0, zmin);
-    const [xa, ya] = PX(amax, 0, zmin);
-    const [xb, yb2] = PX(0, bmax, zmin);
-    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(xa, ya); ctx.stroke();
-    ctx.fillText("a →", xa, ya + 16);
-    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(xb, yb2); ctx.stroke();
-    ctx.fillText("b →", xb, yb2 + 16);
-    ctx.strokeStyle = "#c0392b";
-    const [xza, yza] = PX(0, 0, zmax);
-    ctx.beginPath(); ctx.moveTo(x0, y0); ctx.lineTo(xza, yza); ctx.stroke();
-    ctx.fillStyle = "#333"; ctx.textAlign = "left"; ctx.font = "12px sans-serif";
-    ctx.fillText(`z = logit_c，范围 ${zmin.toFixed(1)} … ${zmax.toFixed(1)} · 网格 ${nx}×${ny} · 拖动旋转视角`, 14, H - 10);
+    ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif"; ctx.textAlign = "right";
+    ctx.fillText(maxA.toExponential(2), L - 8, T + 9);
+    ctx.fillText("0", L - 8, T + ph + 4);
+    ctx.textAlign = "center";
+    const tick = Math.max(1, Math.ceil(K / 16));
+    for (let i = 0; i < K; i += tick) ctx.fillText(String(comps[i].k), X(i) + bw / 2, T + ph + 16);
+    ctx.textAlign = "left"; ctx.fillStyle = "#2a2f3a"; ctx.font = "bold 12px sans-serif";
+    ctx.fillText("|c_k|  每个频率的幅度（红 = 保留）", L, 15);
+    ctx.textAlign = "right"; ctx.fillStyle = "#333"; ctx.font = "12px sans-serif";
+    ctx.fillText("频率 k →", W - R, H - 6);
   }
 
-  /** 按 state.l3d 里的视角重画 3D */
-  function syncL3() {
-    const d = state.l3d, cv = $("#cLogits3D");
-    if (!d || !cv) return;
-    drawLogits3D(cv, d.as3, d.bs3, d.g3, d.rot, d.tilt);
-  }
+  /** ③ 拆解与叠加：上半 = 把保留的频率一条条加上去、逐步逼近原始；下半 = 每条波单独的样子 */
+  function drawEmbedParts(canvas, p, y, series, topN, yrec, xAxis = "token a") {
+    const n = topN.length;
+    const nCols = Math.min(4, n);
+    const nRowsB = Math.ceil(n / nCols);
+    const W = 1100, topH = 330, cellH = 208;
+    const H = topH + 12 + nRowsB * cellH + 28;
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
+    const X = (ox, w, i) => ox + (w * i) / (p - 1);
+    const fmt = (v) => (v === 0 ? "0" : Math.abs(v) < 0.01 ? v.toExponential(1) : v.toFixed(3));
 
-  /** 给 3D 画布绑定一次交互：拖拽旋转/俯仰 + 悬停反投影显示 (a,b) */
-  function attachL3(cv) {
-    if (cv.__l3k) return;
-    cv.__l3k = true;
-    cv.style.cursor = "crosshair";
-    cv.style.touchAction = "none";
-    let drag = false, lx = 0, ly = 0;
-    let tip = null, hoverKey = "", hoverZ = NaN;
-    const makeTip = () => {
-      if (tip) return tip;
-      tip = document.createElement("div");
-      tip.style.cssText = "position:fixed;pointer-events:none;background:rgba(12,16,24,.95);color:#fff;"
-        + "font:12px/1.5 sans-serif;padding:4px 9px;border-radius:6px;border:1px solid #3a4458;"
-        + "z-index:99999;white-space:nowrap;";
-      document.body.appendChild(tip);
-      return tip;
-    };
-    const hideTip = () => { if (tip) tip.style.display = "none"; };
+    // 前缀和：partials[j] = 直流 + 前 j 个频率（j = 0…n）
+    const partials = [new Float64Array(p).fill(series.c0)];
+    for (let j = 0; j < n; j++) {
+      const t = topN[j], prev = partials[j], cur = new Float64Array(p);
+      for (let i = 0; i < p; i++) {
+        const th = (2 * Math.PI * t.k * i) / p;
+        cur[i] = prev[i] + t.a * Math.cos(th) + t.b * Math.sin(th);
+      }
+      partials.push(cur);
+    }
 
-    cv.addEventListener("pointerdown", (e) => {
-      if (e.button === 0) { drag = true; lx = e.clientX; ly = e.clientY; hideTip(); cv.setPointerCapture(e.pointerId); cv.style.cursor = "grabbing"; }
-    });
-    cv.addEventListener("pointermove", (e) => {
-      const d = state.l3d;
-      if (drag) {                      // 拖动：旋转 / 俯仰
-        if (!d) return;
-        d.rot = Math.max(-80, Math.min(80, d.rot + (e.clientX - lx) * 0.4));
-        d.tilt = Math.max(0.35, Math.min(1.6, d.tilt - (e.clientY - ly) * 0.003));
-        lx = e.clientX; ly = e.clientY;
-        syncL3();
-        return;
+    // ---------- 上半：逐个频率叠加 ----------
+    {
+      const L = 66, R = 16, T = 26, B = 30, ow = W - L - R, oh = topH - T - B;
+      let vmin = 0, vmax = 0;
+      const scan = (arr) => { for (let i = 0; i < p; i++) { if (arr[i] > vmax) vmax = arr[i]; if (arr[i] < vmin) vmin = arr[i]; } };
+      scan(y);
+      for (const s of partials) scan(s);
+      if (vmax - vmin < 1e-12) vmax = vmin + 1;
+      const Y = (v) => T + oh - ((oh * (v - vmin)) / (vmax - vmin));
+
+      ctx.strokeStyle = "#eef0f4"; ctx.lineWidth = 1;
+      for (let g = 0; g <= 4; g++) {
+        const gy = T + (oh * g) / 4;
+        ctx.beginPath(); ctx.moveTo(L, gy); ctx.lineTo(W - R, gy); ctx.stroke();
       }
-      if (!d || !d.lastView || e.buttons !== 0) { hideTip(); return; }
-      // 悬停：把光标反投影到 (a,b) 网格
-      const V = d.lastView;
-      const rect = cv.getBoundingClientRect();
-      const ix = (e.clientX - rect.left) * (cv.width / rect.width);
-      const iy = (e.clientY - rect.top) * (cv.height / rect.height);
-      const u = (ix - V.ox) / V.S, v = (iy - V.oy) / V.S;
-      const det = V.ea.x * V.eb.y - V.eb.x * V.ea.y;
-      if (Math.abs(det) < 1e-9) { hideTip(); return; }
-      const aI = Math.round((u * V.eb.y - V.eb.x * v) / det);
-      const bI = Math.round((V.ea.x * v - u * V.ea.y) / det);
-      if (aI < 0 || aI > V.amax || bI < 0 || bI > V.bmax) { hideTip(); return; }
-      const key = aI + "," + bI;
-      if (key !== hoverKey) {          // 只在格点变化时才算一次前向
-        hoverKey = key;
-        try {
-          const idx = Number(($("#lgSel") && $("#lgSel").value) || 0);
-          const { logits } = forwardOne(aI, bI);
-          hoverZ = logits[idx];
-        } catch (err) { hoverZ = NaN; }
+      ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif"; ctx.textAlign = "right";
+      for (let g = 0; g <= 4; g++) {
+        ctx.fillText(fmt(vmax - ((vmax - vmin) * g) / 4), L - 8, T + (oh * g) / 4 + 4);
       }
-      const t = makeTip();
-      t.textContent = `a = ${aI} · b = ${bI}   z(logit_c) = ${Number.isFinite(hoverZ) ? hoverZ.toFixed(2) : "—"}`;
-      t.style.left = (e.clientX + 16) + "px";
-      t.style.top = (e.clientY + 14) + "px";
-      t.style.display = "block";
-    });
-    const stop = () => { drag = false; cv.style.cursor = "crosshair"; hideTip(); };
-    cv.addEventListener("pointerup", stop);
-    cv.addEventListener("pointercancel", stop);
-    cv.addEventListener("pointerleave", stop);
+      if (vmin < 0 && vmax > 0) {
+        ctx.strokeStyle = "#c9ced7"; ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(L, Y(0)); ctx.lineTo(W - R, Y(0)); ctx.stroke();
+        ctx.setLineDash([]);
+      }
+      const line = (arr, color, width) => {
+        ctx.strokeStyle = color; ctx.lineWidth = width;
+        ctx.beginPath();
+        for (let i = 0; i < p; i++) { const px = X(L, ow, i), py = Y(arr[i]); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }
+        ctx.stroke();
+      };
+      line(y, "#8fa8c4", 2.4);                                   // 原始
+      for (let j = 1; j < n; j++) {                              // 中间结果：浅 → 深
+        const l = 80 - (24 * (j - 1)) / Math.max(1, n - 1);
+        line(partials[j], `hsl(28, 80%, ${l}%)`, 1.6);
+      }
+      if (n >= 1) line(partials[n], "#e07b1a", 2.2);              // 加满 = 重建
+
+      // 标题 + 内联图例
+      ctx.textAlign = "left"; ctx.fillStyle = "#2a2f3a"; ctx.font = "bold 12px sans-serif";
+      const title = `逐个频率叠加：直流 c₀ = ${fmt(series.c0)}`;
+      ctx.fillText(title, L, 17);
+      let lx = L + ctx.measureText(title).width + 18;
+      const swatch = (color, label, w = 24) => {
+        ctx.strokeStyle = color; ctx.lineWidth = 2.2;
+        ctx.beginPath(); ctx.moveTo(lx, 13); ctx.lineTo(lx + w, 13); ctx.stroke();
+        ctx.fillStyle = "#57606a"; ctx.font = "11px sans-serif"; ctx.textAlign = "left";
+        ctx.fillText(label, lx + w + 5, 17);
+        lx += w + 5 + ctx.measureText(label).width + 16;
+      };
+      swatch("#8fa8c4", "原始");
+      for (let j = 1; j <= n; j++) {
+        const l = j === n ? 50 : 80 - (24 * (j - 1)) / Math.max(1, n - 1);
+        swatch(`hsl(28, 80%, ${l}%)`, j === n ? `+ 全部（= 重建）` : `+ k=${topN[j - 1].k}`, j === n ? 34 : 18);
+      }
+      ctx.textAlign = "right"; ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif";
+      ctx.fillText(`每加一个频率就更贴近灰色；加满 ${n} 个后基本重合`, W - R, 17);
+
+      ctx.textAlign = "center"; ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif";
+      const tick = Math.max(1, Math.ceil(p / 16));
+      for (let i = 0; i < p; i += tick) {
+        const isLast = i + tick >= p;
+        ctx.textAlign = isLast ? "right" : "center";
+        ctx.fillText(String(i), isLast ? W - R : X(L, ow, i), T + oh + 18);
+      }
+      ctx.textAlign = "right"; ctx.fillStyle = "#333"; ctx.font = "12px sans-serif";
+      ctx.fillText(`${xAxis} →`, W - R, H - 5);
+    }
+
+    // ---------- 下半：每个频率各自的波形 ----------
+    {
+      const L = 66, R = 16, gap = 14;
+      const cw = (W - L - R - gap * (nCols - 1)) / nCols;
+      const colors = ["#1f77b4", "#2ca02c", "#8a5fc5", "#17becf", "#d62728", "#bcbd22", "#e377c2", "#7f7f7f"];
+      let allE = 0;
+      for (const t of series.comps) allE += t.a * t.a + t.b * t.b;
+      for (let j = 0; j < n; j++) {
+        const t = topN[j];
+        const col = j % nCols, row = (j / nCols) | 0;
+        const ox = L + col * (cw + gap), oy = topH + 12 + row * cellH;
+        const iT = 20, iB = 26, ox2 = ox + 12, ow2 = cw - 24, oh2 = cellH - iT - iB;
+
+        const wv = new Float64Array(p);
+        let m = 1e-12;
+        for (let i = 0; i < p; i++) {
+          const th = (2 * Math.PI * t.k * i) / p;
+          wv[i] = t.a * Math.cos(th) + t.b * Math.sin(th);
+          m = Math.max(m, Math.abs(wv[i]));
+        }
+        const Y = (v) => oy + iT + oh2 / 2 - ((oh2 / 2) * v) / m;
+        const share = allE > 0 ? (100 * (t.a * t.a + t.b * t.b)) / allE : 0;
+
+        ctx.strokeStyle = "#e8eaef"; ctx.lineWidth = 1;
+        ctx.strokeRect(ox, oy, cw, cellH);
+        ctx.strokeStyle = "#eef0f4";
+        for (let g = 1; g < 4; g++) {
+          const gy = oy + iT + (oh2 * g) / 4;
+          ctx.beginPath(); ctx.moveTo(ox2, gy); ctx.lineTo(ox2 + ow2, gy); ctx.stroke();
+        }
+        ctx.strokeStyle = "#c9ced7"; ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.moveTo(ox2, Y(0)); ctx.lineTo(ox2 + ow2, Y(0)); ctx.stroke();
+        ctx.setLineDash([]);
+
+        ctx.strokeStyle = colors[j % colors.length]; ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        for (let i = 0; i < p; i++) {
+          const px = ox2 + (ow2 * i) / (p - 1), py = Y(wv[i]);
+          i ? ctx.lineTo(px, py) : ctx.moveTo(px, py);
+        }
+        ctx.stroke();
+
+        ctx.fillStyle = "#2a2f3a"; ctx.font = "bold 11.5px sans-serif"; ctx.textAlign = "left";
+        ctx.fillText(`k = ${t.k}`, ox + 10, oy + 14);
+        ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif"; ctx.textAlign = "right";
+        ctx.fillText(`R = ${t.amp.toFixed(3)} · 占能量 ${share.toFixed(1)}%`, ox + cw - 10, oy + 14);
+        ctx.textAlign = "center"; ctx.fillStyle = "#8a93a5"; ctx.font = "10.5px sans-serif";
+        ctx.fillText("0", ox2, oy + cellH - 8);
+        ctx.fillText(String(p - 1), ox2 + ow2, oy + cellH - 8);
+      }
+    }
   }
 
   // ===================================================================
-  // 2D 热图：全分辨率 P×P 逐点前向（不再用粗网格插值——粗网格步长与 P 不互质时
-  // 会整体漏掉只有 1 格宽的对角线）。显示量可选：softmax 概率 / 相对 logit / 原始 logit。
+  // 频率视图：沿数据流逐级看同一件事 —— 某一维是不是少数几个 sin/cos 波
+  //   EMBED → ATTENTION → MLP → LOGITS，正好是傅里叶乘法电路的全链路
+  //   （读出权重 W_U 的视图已下线：它的“输出”就是 logits，想看权重看下面热图区）
   // ===================================================================
-  const HEAT = { W: 600, H: 546, L: 52, R: 12, T: 18, B: 58 };
-
-  /** 全分辨率 logit 网格 Z[(a*P+b)*P+c]，按 (run, seed, epoch) 缓存（约 1.3 万次前向） */
-  async function ensureFullGrid() {
-    const p = state.cfg.p;
-    const key = `${state.run}#${state.seed}#${state.loadedEpoch}`;
-    if (state.grid && state.grid.key === key) return state.grid;
-    const gen = state.gen;
-    const prog = $("#lgProg");
-    const Z = new Float32Array(p * p * p);
-    const t0 = performance.now();
-    for (let a = 0; a < p; a++) {
-      for (let b = 0; b < p; b++) Z.set(forwardCore(a, b).logits, (a * p + b) * p);
-      if (a % 2 === 1) {
-        if (prog) prog.textContent = `计算中 ${Math.round(((a + 1) / p) * 100)}%`;
-        await new Promise((r) => setTimeout(r, 0));     // 让出主线程，避免卡界面
-        if (gen !== state.gen) return null;             // 阶段/seed 已切换，放弃这次
-      }
-    }
-    const ms = performance.now() - t0;
-    if (prog) prog.textContent = `${p}×${p} · ${(ms / 1000).toFixed(1)} s`;
-    state.grid = { key, p, Z, ms };
-    return state.grid;
-  }
-
-  /** 从网格抽出「显示量」层；同时存下 p(c) 与 argmax 供悬停提示 */
-  function buildHeatField(grid, idx, qty) {
-    const p = grid.p, Z = grid.Z;
-    const F = new Float32Array(p * p), P = new Float32Array(p * p), MX = new Int16Array(p * p);
-    for (let a = 0; a < p; a++) {
-      for (let b = 0; b < p; b++) {
-        const off = (a * p + b) * p, k = a * p + b;
-        let mx = -Infinity, sum = 0, am = 0;
-        for (let c = 0; c < p; c++) { const t = Z[off + c]; sum += t; if (t > mx) { mx = t; am = c; } }
-        let es = 0;
-        for (let c = 0; c < p; c++) es += Math.exp(Z[off + c] - mx);
-        const z = Z[off + idx];
-        P[k] = Math.exp(z - mx) / es;
-        MX[k] = am;
-        F[k] = qty === "prob" ? P[k] : (qty === "rel" ? z - sum / p : z);
-      }
-    }
-    return { key: `${grid.key}#${idx}#${qty}`, p, idx, qty, F, P, MX };
-  }
-
-  /** 顺序色（白 → 深红），给概率用：0 就是白，越接近 1 越红 */
-  function seqRedRGB(t) {
-    const u = Math.min(1, Math.max(0, t));
-    return [Math.round(255 - 100 * u), Math.round(255 - 237 * u), Math.round(255 - 223 * u)];
-  }
-
-  const HEAT_NOTE = {
-    prob: "softmax 概率 p(c|a,b)：只有 a+b ≡ c (mod P) 的位置 ≈ 1（红），其余 ≈ 0（白）——这才是「模型选中类 c」的位置。",
-    rel: "相对 logit = logit_c −（该点各类 logit 的均值）：去掉了每条输入的公共分量，对角带最红；背景红蓝条纹来自模型所用的稀疏傅里叶频率（见 key_freqs.json）。",
-    raw: "原始 logit：模型对某个固定类别的 logit 本身随 a+b 快速振荡（关键频率 5/10/15/31/48），所以整幅是周期性条纹而非一条对角线；又因多数位置为正，以 0 为白时整体偏红。",
+  const FREQ_SRC = {
+    embed: {
+      name: "EMBED 频率", icon: "🎼", btn: "embedBtn", stage: "embed",
+      selLabel: "词嵌入维度", selKind: "dim", varName: "a",
+      xAxis: "token a", qty: "W_E[a, c]",
+      cap1: "① 把这一列看成 token 的函数：横轴 a = 0…P−1，纵轴 W<sub>E</sub>[a, c]（纯 embedding 矩阵，不含位置项）",
+      where: "论文 3.1 第一句 / 图 3（左）",
+      why: "<b>词嵌入把 token a 映射到 sin(w<sub>k</sub>a)、cos(w<sub>k</sub>a)</b>：每一维都只是少数几个 sin/cos 波的固定组合，而不是一张任意查表。",
+      hint: "固定<b>一个词嵌入维</b>、扫 token a，把它拆成几个 sin/cos 波——上图看“少数几个波就能重建整条曲线”，下图看谱有多稀疏。" +
+            "结构图上对应 EMBED 里那条 <b>W<sub>E</sub>[a]</b> 向量（a / b / = 三条中的第一条），只点亮它、不点亮整块 EMBED。",
+      vec: "a",
+    },
+    attn: {
+      name: "ATTENTION 频率", icon: "🎯", btn: "attnFreqBtn", stage: "attn",
+      selLabel: "残差流维度", selKind: "dim", varName: "b",
+      xAxis: "token b", qty: "attention 输出[=][c]",
+      cap1: "① 固定 a = 0、扫 b：横轴 b = 0…P−1，纵轴 = 位置「=」处 4 个注意力头输出之和的第 c 维",
+      where: "论文 4.2 / 图 4（左）",
+      why: "注意力用三角恒等式把 sin/cos(w<sub>k</sub>a)、sin/cos(w<sub>k</sub>b) 相乘相加，合成 sin/cos(w<sub>k</sub>(a+b))——这一步之后还是同一批频率。",
+      hint: "固定 a = 0、扫 b，看位置「=」上 4 个注意力头的输出之和：它已经在算 sin/cos(w<sub>k</sub>(a+b))，谱同样只有几个尖峰。" +
+            "结构图上点亮的是 ATTENTION 里最下面那条 <b>Σ 4 头输出相加 → W<sub>O</sub> 投影</b>子层（4 个头的 out 由右侧汇聚线收进它），不是整个 ATTENTION 块。",
+      part: "attnSum",
+    },
+    mlp: {
+      name: "MLP 频率", icon: "🧩", btn: "mlpFreqBtn", stage: "mlp",
+      selLabel: "残差流维度", selKind: "dim", varName: "b",
+      xAxis: "token b", qty: "MLP out[c]",
+      cap1: "① 固定 a = 0、扫 b：横轴 b = 0…P−1，纵轴 = MLP 输出（W<sub>out</sub>·ReLU(…)）的第 c 维",
+      where: "论文 4.2 / 图 4（中）",
+      why: "MLP 神经元被单一频率解释（论文图 4 中），它们加回残差流的输出也落在同一批频率上。",
+      hint: "固定 a = 0、扫 b，看 MLP 加回残差流的那个 128 维向量（= W<sub>out</sub>·ReLU(…) + b<sub>out</sub>）——它和 attention 一样只由少数频率构成。" +
+            "结构图上点亮的是 MLP 最右边那一列<b>输出向量</b>（加回残差流的 128 维增量），不是整个 MLP 块、也不是权重框；" +
+            "W_in / W_out 只作为层次标注画在两侧。",
+      part: "mlpOut",
+    },
+    logits: {
+      name: "LOGITS 频率", icon: "📊", btn: "logitsFreqBtn", stage: "logits",
+      selLabel: "输出类", selKind: "class", varName: "b",
+      xAxis: "token b", qty: "logit_c(a=0, b)",
+      cap1: "① 固定 a = 0、扫 b：横轴 b = 0…P−1，纵轴 = 所选输出类 c 的 logit",
+      where: "论文 4.1（logits 的周期性）/ 图 4（右）",
+      why: "最后的 logits 也只在关键频率上有分量：几个余弦波在这里<b>相长/相消干涉</b>，正确类别 c* = a+b 处被抬到最大。",
+      hint: "固定 a = 0、扫 b，看某个输出类的 logit：全链路的频率在这里相长/相消干涉，正确类别被抬到最大。" +
+            "结构图上点亮的是最右侧 logits 输出向量里<b>所选输出类的那一格</b>（换“输出类”下拉框会跟着移动）。" +
+            "上面那个 UNEMBED 矩阵只作为结构示意（读出权重，不再单独出面板）；这里看的才是它真正读出来的值。",
+      part: "logitsCell",
+    },
   };
 
-  /** 2D 热图：x=a、y=b、逐格近邻采样（真实值，不做插值） */
-  function drawLogitsHeat(canvas, f) {
-    const { W, H, L, R, T, B } = HEAT;
-    canvas.width = W; canvas.height = H;
-    const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
-    const p = f.p;
-    let amp = 1;
-    if (f.qty !== "prob") {                 // 发散色以 0 为中心，取对称幅度
-      amp = 0;
-      for (let i = 0; i < f.F.length; i++) { const v = Math.abs(f.F[i]); if (v > amp) amp = v; }
-      amp = amp || 1;
-    }
-    const pw = W - L - R, ph = H - T - B;
-    const img = ctx.createImageData(pw, ph), dat = img.data;
-    for (let iy = 0; iy < ph; iy++) {
-      const b = Math.min(p - 1, Math.floor((iy / ph) * p));
-      for (let ix = 0; ix < pw; ix++) {
-        const a = Math.min(p - 1, Math.floor((ix / pw) * p));
-        const v = f.F[a * p + b];
-        const rgb = f.qty === "prob" ? seqRedRGB(v) : divergingRGB((v / amp + 1) / 2);
-        const o = (iy * pw + ix) * 4;
-        dat[o] = rgb[0]; dat[o + 1] = rgb[1]; dat[o + 2] = rgb[2]; dat[o + 3] = 255;
-      }
-    }
-    ctx.putImageData(img, L, T);
-    ctx.strokeStyle = "#cfd3da"; ctx.lineWidth = 1;
-    ctx.strokeRect(L, T, pw, ph);
-    const amax = p - 1, bmax = p - 1;
-    const step = Math.max(1, Math.round(amax / 8));
-    ctx.fillStyle = "#57606a"; ctx.font = "10px sans-serif";
-    ctx.textAlign = "center";
-    for (let v = 0; v <= amax; v += step) ctx.fillText(String(v), L + (v / amax) * pw, H - B + 14);
-    ctx.textAlign = "right";
-    for (let v = 0; v <= bmax; v += step) ctx.fillText(String(v), L - 5, T + (v / bmax) * ph + 3);
-    ctx.fillStyle = "#333"; ctx.font = "12px sans-serif";
-    ctx.textAlign = "right"; ctx.fillText("b ↓", L - 8, T - 6);
-    ctx.textAlign = "left"; ctx.fillText("a →", W - R - 6, H - B + 30);
-    // 色阶条画在图下方（不遮挡数据）
-    const bx = L, bw = 140, by = H - B + 26, bh = 8;
-    const grad = ctx.createLinearGradient(bx, 0, bx + bw, 0);
-    if (f.qty === "prob") {
-      grad.addColorStop(0, "#ffffff"); grad.addColorStop(1, "#9b1220");
+  /** 取 src 指定的那条长度 p 的曲线（sel = 维度下标或输出类）。 */
+  function freqSignal(src, sel, p, d) {
+    const y = new Float64Array(p);
+    if (src === "embed") {
+      const te = state.mats["token_embed"];                 // [(p+1), d]，行 = token
+      for (let i = 0; i < p; i++) y[i] = te.data[i * d + sel];
+    } else if (src === "logits") {
+      for (let b = 0; b < p; b++) y[b] = forwardOne(0, b).logits[sel];
     } else {
-      grad.addColorStop(0, "#2166ac"); grad.addColorStop(0.5, "#ffffff"); grad.addColorStop(1, "#b2182b");
+      const key = src === "attn" ? "attn" : "mlp";
+      for (let b = 0; b < p; b++) y[b] = forwardOne(0, b)[key][sel];
     }
-    ctx.fillStyle = grad; ctx.fillRect(bx, by, bw, bh);
-    ctx.strokeStyle = "#999"; ctx.strokeRect(bx, by, bw, bh);
-    ctx.fillStyle = "#57606a"; ctx.font = "9px sans-serif";
-    ctx.textAlign = "left"; ctx.fillText(f.qty === "prob" ? "0" : (-amp).toFixed(0), bx - 2, by + bh + 10);
-    ctx.textAlign = "center"; ctx.fillText(f.qty === "prob" ? "0.5" : "0", bx + bw / 2, by + bh + 10);
-    ctx.textAlign = "right"; ctx.fillText(f.qty === "prob" ? "1" : amp.toFixed(0), bx + bw + 2, by + bh + 10);
-    ctx.textAlign = "left"; ctx.fillStyle = "#2a2f3a"; ctx.font = "bold 11px sans-serif";
-    const ttl = f.qty === "prob" ? `p(c=${f.idx} | a, b)`
-      : (f.qty === "rel" ? `logit_${f.idx} − mean_c logit_c` : `logit_${f.idx}(a, b)`);
-    ctx.fillText(ttl, bx + bw + 14, by + bh);
-    canvas.__hf = f;                        // 供悬停提示使用（与实际画出来的一致）
+    return y;
   }
 
-  /** 取（或算）全分辨率网格 → 建显示层 → 画图 + 说明文字 */
-  async function refreshHeat() {
-    const cv = $("#cLogitsHeat");
-    if (!cv || !state.mats || !state.cfg) return;
-    const grid = await ensureFullGrid();
-    if (!grid) return;
-    const idx = Number(($("#lgSel") && $("#lgSel").value) || 0);
-    const qty = ($("#lgQty") && $("#lgQty").value) || "prob";
-    const fk = `${grid.key}#${idx}#${qty}`;
-    if (!state.heatField || state.heatField.key !== fk) state.heatField = buildHeatField(grid, idx, qty);
-    drawLogitsHeat(cv, state.heatField);
-    attachHeat(cv);
-    const note = $("#heatNote");
-    if (note) note.textContent = HEAT_NOTE[qty] || "";
+  /** 稀疏度评分：前 6 个频率占总能量（去直流）的比例。 */
+  function freqConcentration(y, p) {
+    const s = fourierSeries(y, p);
+    let kept = 0, all = 0;
+    for (const t of s.comps) all += t.a * t.a + t.b * t.b;
+    for (const t of topFreqs(s, 6)) kept += t.a * t.a + t.b * t.b;
+    return all > 0 ? kept / all : 0;
   }
 
-  /** 给 2D 热图绑定悬停：反算 (a,b)，显示 a、b、(a+b) mod P、logit_c、p(c) 与 argmax */
-  function attachHeat(cv) {
-    if (cv.__hk) return;
-    cv.__hk = true;
-    cv.style.cursor = "crosshair";
-    let tip = null, key = "";
-    const make = () => {
-      if (tip) return tip;
-      tip = document.createElement("div");
-      tip.style.cssText = "position:fixed;pointer-events:none;background:rgba(12,16,24,.95);color:#fff;"
-        + "font:12px/1.5 sans-serif;padding:4px 9px;border-radius:6px;border:1px solid #3a4458;"
-        + "z-index:99999;white-space:nowrap;";
-      document.body.appendChild(tip);
-      return tip;
-    };
-    const hide = () => { if (tip) tip.style.display = "none"; };
-    cv.addEventListener("pointermove", (e) => {
-      const f = cv.__hf;
-      if (!f || e.buttons !== 0) { hide(); return; }
-      const p = f.p, { L, R, T, B } = HEAT;
-      const rect = cv.getBoundingClientRect();
-      const ix = (e.clientX - rect.left) * (cv.width / rect.width);
-      const iy = (e.clientY - rect.top) * (cv.height / rect.height);
-      const pw = cv.width - L - R, ph = cv.height - T - B;
-      if (ix < L || ix > L + pw || iy < T || iy > T + ph) { hide(); return; }
-      const aI = Math.min(p - 1, Math.floor(((ix - L) / pw) * p));
-      const bI = Math.min(p - 1, Math.floor(((iy - T) / ph) * p));
-      const k = aI + "," + bI;
-      const t = make();
-      if (k !== key) {                    // 只在格子变化时更新内容
-        key = k;
-        const zc = state.grid ? state.grid.Z[(aI * p + bI) * p + f.idx] : NaN;
-        t.textContent = `a = ${aI} · b = ${bI} · (a+b) mod P = ${(aI + bI) % p}`
-          + ` · logit_c = ${Number.isFinite(zc) ? zc.toFixed(2) : "—"}`
-          + ` · p(c) = ${f.P[aI * p + bI].toFixed(4)} · argmax = ${f.MX[aI * p + bI]}`;
+  /** 自动挑一条最“正弦”的维度 / 输出类（前 6 个频率占比最高）。 */
+  function pickFreqIndex(src, p, d) {
+    if (src === "embed") {                                  // 直接读矩阵，很便宜
+      let best = 0, bs = -1;
+      for (let k = 0; k < d; k++) {
+        const sc = freqConcentration(freqSignal(src, k, p, d), p);
+        if (sc > bs) { bs = sc; best = k; }
       }
-      t.style.left = (e.clientX + 16) + "px";
-      t.style.top = (e.clientY + 14) + "px";
-      t.style.display = "block";
-    });
-    const stop = () => { if (tip) tip.style.display = "none"; };
-    cv.addEventListener("pointerleave", stop);
+      return best;
+    }
+    // 需要前向的类型：一趟扫 b，把所有维度/输出类的曲线一起收下来再评分
+    const n = src === "logits" ? p : d;
+    const cols = Array.from({ length: n }, () => new Float64Array(p));
+    for (let b = 0; b < p; b++) {
+      const f = forwardOne(0, b);
+      const v = src === "logits" ? f.logits : (src === "attn" ? f.attn : f.mlp);
+      for (let k = 0; k < n; k++) cols[k][b] = v[k];
+    }
+    let best = 0, bs = -1;
+    for (let k = 0; k < n; k++) {
+      const sc = freqConcentration(cols[k], p);
+      if (sc > bs) { bs = sc; best = k; }
+    }
+    return best;
   }
 
-  async function runLogitsSweep() {
-    const btn = $("#logitsBtn");
+  /** 频率视图主流程：src ∈ embed / attn / mlp / unembed / logits */
+  async function runFreqView(src) {
+    const spec = FREQ_SRC[src] || FREQ_SRC.embed;
+    const btn = $(`#${spec.btn}`);
     if (!state.cfg || !state.epochs || state.epochs.length === 0) return;
-    // 互斥：点“LOGITS 循环”时隐藏测试与 MLP 面板
-    const tR = $("#testResult");
-    if (tR) tR.hidden = true;
-    const sR = $("#sweepResult");
-    if (sR) sR.hidden = true;
-    if (!state.mats) {
-      const ep = state.loadedEpoch != null ? state.loadedEpoch : state.epochs[state.epochs.length - 1];
-      await loadWeights(ep);
+    // 互斥：隐藏测试面板
+    for (const id of ["#testResult"]) {
+      const el = $(id); if (el) el.hidden = true;
     }
+    state.freqSrc = src;
+    setPanelInfo(`freq:${src}`);
+    const ep = state.loadedEpoch != null ? state.loadedEpoch : state.epochs[state.epochs.length - 1];
+    if (!state.mats) await loadWeights(ep);
     if (!state.mats) { alert("请先载入权重（点上方“载入权重”）"); return; }
-    btn.disabled = true; btn.innerHTML = "扫描中…";
+    btn.disabled = true; btn.innerHTML = "分析中…";
     try {
-      const p = state.cfg.p;
-      const idx = Number(($("#lgSel") && $("#lgSel").value) || 0);   // 下拉选择的输出类
-      const ysB = new Float64Array(p);   // ① 固定 a=0，扫 b
-      for (let b = 0; b < p; b++) {
-        const { logits } = forwardOne(0, b);
-        ysB[b] = logits[idx];
+      const p = state.cfg.p, d = state.cfg.d_model;
+      // 维度 / 输出类选择器：换一级就重建选项，并自动挑一条最“正弦”的
+      const sel = $("#freqSel");
+      const kind = spec.selKind === "class" ? "class" : "dim";
+      $("#freqSelLabel").textContent = spec.selLabel;
+      $("#freqTitle").textContent = `${spec.icon} ${spec.name}`;
+      if (sel.dataset.src !== src) {
+        sel.innerHTML = "";
+        const n = kind === "class" ? p : d;
+        for (let i = 0; i < n; i++) sel.add(new Option(`${kind === "class" ? "类 " : "dim "}${i}`, String(i)));
+        sel.dataset.src = src;
+        if (state.freqPick[src] == null) state.freqPick[src] = pickFreqIndex(src, p, d);
+        sel.value = String(state.freqPick[src]);
       }
-      const ysA = new Float64Array(p);   // ② 固定 b=0，扫 a
-      for (let a = 0; a < p; a++) {
-        const { logits } = forwardOne(a, 0);
-        ysA[a] = logits[idx];
+      const topSel = $("#freqTop");
+      if (topSel.options.length === 0) {
+        for (let n = 1; n <= 8; n++) topSel.add(new Option(String(n), String(n)));
+        topSel.value = "3";
       }
-      $("#lgRange").textContent = `b = 0 … ${p - 1}（共 ${p} 个）`;
-      const st = stageOf(state.loadedEpoch);
-      $("#lgStage").textContent = `${state.loadedEpoch} 步${st ? " · " + st : ""}`;
-      $("#logitsResult").hidden = false;
-      drawSingleSweep($("#cLogitsSweep"), p, ysB, `① c${idx} · logit（固定 a=0，扫 b）`, "b");
-      const cA = $("#cLogitsSweepA");
-      if (cA) drawSingleSweep(cA, p, ysA, `② c${idx} · logit（固定 b=0，扫 a）`, "a");
-      // ③ 三维曲面：采样 ~29×29 的 (a,b) 网格
-      const step = Math.max(1, Math.round((p - 1) / 28));
-      const as3 = [], bs3 = [];
-      for (let a = 0; a < p; a += step) as3.push(a);
-      if (as3[as3.length - 1] !== p - 1) as3.push(p - 1);
-      for (let b = 0; b < p; b += step) bs3.push(b);
-      if (bs3[bs3.length - 1] !== p - 1) bs3.push(p - 1);
-      const g3 = new Float64Array(as3.length * bs3.length);
-      for (let ia = 0; ia < as3.length; ia++) {
-        for (let ib = 0; ib < bs3.length; ib++) {
-          const { logits } = forwardOne(as3[ia], bs3[ib]);
-          g3[ia * bs3.length + ib] = logits[idx];
-        }
+      const c = Number(sel.value), N = Number(topSel.value);
+
+      // 维度 / 输出类选择器已经就绪，让结构图上的高亮再同步一次
+      // （LOGITS 点亮的格子要跟 “输出类” 下拉框一致；setPanelInfo 调用时下拉框还没建好）
+      highlightArch(spec.stage);
+
+      const y = freqSignal(src, c, p, d);
+      const series = fourierSeries(y, p);
+      const topN = topFreqs(series, N);
+      const keep = new Set(topN.map((t) => t.k));
+      const yrec = rebuildFromFreqs(series, p, keep);
+
+      let sse = 0, sst = 0;
+      for (let n = 0; n < p; n++) {
+        const e = y[n] - yrec[n]; sse += e * e;
+        const t = y[n] - series.c0; sst += t * t;
       }
-      const c3 = $("#cLogits3D");
-      if (c3) {
-        if (!state.l3d) state.l3d = { rot: 0, tilt: 1 };   // 保留用户视角；网格换成新的
-        state.l3d.as3 = as3; state.l3d.bs3 = bs3; state.l3d.g3 = g3;
-        attachL3(c3);
-        syncL3();
-      }
-      const ch = $("#cLogitsHeat");
-      if (ch) await refreshHeat();          // 全分辨率逐点重算（按 epoch 缓存）
+      const rms = Math.sqrt(sse / p);
+      const errPct = sst > 0 ? (100 * sse) / sst : 0;
+      let keptE = 0, allE = 0;
+      for (const t of topN) keptE += t.a * t.a + t.b * t.b;
+      for (const t of series.comps) allE += t.a * t.a + t.b * t.b;
+      const sharePct = allE > 0 ? (100 * keptE) / allE : 0;
+
+      $("#freqCap1").innerHTML = spec.cap1;
+      $("#freqCap2").innerHTML = `② 频率谱：对 ${spec.xAxis} 做 DFT 后各频率 k 的幅度 |c<sub>k</sub>|（横轴 k = 1…P/2，红 = 保留）`;
+      $("#freqCap3").innerHTML = "③ 拆解与叠加：上半 = 把保留的频率<strong>一条条加上去</strong>（浅 → 深，最后一条 = 重建）；下半 = 每条波单独长什么样";
+
+      drawEmbedWave($("#cEmbedWave"), p, y, yrec, { c, rms, errPct, topN, qty: spec.qty, xAxis: spec.xAxis });
+      drawEmbedSpec($("#cEmbedSpec"), p, series, keep);
+      drawEmbedParts($("#cEmbedParts"), p, y, series, topN, yrec, spec.xAxis);
+
+      const st = stageOf(ep);
+      $("#freqStage").textContent = `${ep} 步${st ? " · " + st : ""}`;
+      $("#edWaveNote").innerHTML =
+        `上图这条 <b>${spec.qty}</b> 曲线只由 <b>${topN.length} 个频率</b>（k = ${topN.map((t) => t.k).join(", ")}，` +
+        `每个频率含 1 个 cos 波 + 1 个 sin 波）相加得到，却复现了原始曲线的 <b>${(100 - errPct).toFixed(2)}%</b>。`;
+      $("#edSpecNote").innerHTML =
+        `共 ${series.K} 个频率，前 ${topN.length} 个就占了该曲线总能量的 <b>${sharePct.toFixed(2)}%</b>。${spec.why}` +
+        `<br>对应位置：${spec.where}；w<sub>k</sub> = 2πk/P。换维度或换训练阶段（顿悟前应当更杂乱）可以对比。`;
+      $("#edPartsNote").innerHTML =
+        `橙色那条 = 直流 <b>c₀ = ${series.c0.toFixed(3)}</b>（该列均值，只负责整体上下平移）+ 上面 <b>${topN.length}</b> 条波逐点相加。` +
+        `上半图里浅色曲线是“只加前 1 个、前 2 个…频率”的中间结果，每加一个就更贴近灰色原始曲线；` +
+        `下半图是每条波单独的样子：<b>R·cos(2πk${spec.varName}/P − φ)</b>，幅度 R 与相位 φ 完全由权重决定（不是人挑的），` +
+        `把它们相加就得到①里那条橙色重建曲线。`;
+      $("#freqResult").hidden = false;
     } catch (err) {
       console.error(err);
-      alert(`LOGITS 循环失败：${err.message}`);
+      alert(`${spec.name}失败：${err.message}`);
     } finally {
-      btn.disabled = false; btn.innerHTML = "🔀 LOGITS 循环";
+      btn.disabled = false; btn.innerHTML = `${spec.icon} ${spec.name}`;
     }
   }
 
@@ -1420,21 +1532,21 @@
     $("#headSel").onchange = () => state.mats && matView();
     const tb = $("#testBtn");
     if (tb) tb.addEventListener("click", runTest);
-    const mb = $("#mlpBtn");
-    if (mb) mb.addEventListener("click", runMlpSweep);
-    const lb = $("#logitsBtn");
-    if (lb) lb.addEventListener("click", runLogitsSweep);
-    // 切换下拉的输出类：若 LOGITS 面板正显示则立即按新选择重画
-    const lgs = $("#lgSel");
-    if (lgs) lgs.addEventListener("change", () => {
-      const r = $("#logitsResult");
-      if (r && !r.hidden) runLogitsSweep();
+    // 五个“频率”按钮：同一套视图，只是数据来源不同（沿数据流 EMBED → … → LOGITS）
+    for (const key of Object.keys(FREQ_SRC)) {
+      const b = $(`#${FREQ_SRC[key].btn}`);
+      if (b) b.addEventListener("click", () => runFreqView(key));
+    }
+    // 切换维度/输出类、保留频率数：面板正显示时立即重画
+    const fsel = $("#freqSel");
+    if (fsel) fsel.addEventListener("change", () => {
+      const r = $("#freqResult");
+      if (r && !r.hidden && state.freqSrc) runFreqView(state.freqSrc);
     });
-    // 切换 2D 热图的显示量（概率 / 相对 logit / 原始 logit）：网格已缓存，重画很快
-    const lgq = $("#lgQty");
-    if (lgq) lgq.addEventListener("change", () => {
-      const r = $("#logitsResult");
-      if (r && !r.hidden) refreshHeat();
+    const ftop = $("#freqTop");
+    if (ftop) ftop.addEventListener("change", () => {
+      const r = $("#freqResult");
+      if (r && !r.hidden && state.freqSrc) runFreqView(state.freqSrc);
     });
     onRun();
   }

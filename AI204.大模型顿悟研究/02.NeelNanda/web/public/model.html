@@ -25,11 +25,30 @@
     .arch-card { background: #0e1016; color: #dfe3ea; border-radius: 14px; padding: 16px; overflow-x: auto; margin-bottom: 22px; }
     .arch-card h2 { color: #fff; border: none; margin: 0 0 6px; font-size: 17px; }
     .arch-card svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
+    /* 结构图按级高亮：当前查看的那一级描边变亮 + 发光 */
+    #archSvg g[data-stage] > rect:first-of-type { transition: stroke .2s, stroke-width .2s; }
+    #archSvg g[data-stage].on > rect:first-of-type { stroke: #8fe3f2; stroke-width: 3.5; filter: drop-shadow(0 0 9px rgba(143,227,242,.85)); }
+    /* EMBED 级更细：不点亮整个方块，只点亮里面某一个 token 的嵌入向量（W_E[a] / W_E[b] / W_E[=]）*/
+    #archSvg g[data-vec] > rect:first-of-type { transition: stroke .2s, stroke-width .2s, filter .2s; }
+    #archSvg g[data-vec].on > rect:first-of-type { stroke: #8fe3f2; stroke-width: 2.6; filter: drop-shadow(0 0 8px rgba(143,227,242,.9)); }
+    #archSvg g[data-vec].on .vecName { fill: #8fe3f2; }
+    /* 其它级同样可以细化到层内子模块（data-part），例如 ATTENTION 的「Σ 4 头输出 → W_O」、MLP 的 W_out */
+    #archSvg g[data-part] > rect:first-of-type { transition: stroke .2s, stroke-width .2s, filter .2s; }
+    #archSvg g[data-part].on > rect:first-of-type { stroke: #8fe3f2; stroke-width: 2.6; stroke-dasharray: none; filter: drop-shadow(0 0 8px rgba(143,227,242,.9)); }
+    #archSvg g[data-part].on .partName { fill: #8fe3f2; }
+    /* 子层内部的一整列结点（如 MLP 的输出列）一起点亮，避免小圆点看不出来 */
+    #archSvg g[data-part].on .partHl circle { fill: #5fd7ea; stroke: #8fe3f2; stroke-width: 1; }
+    /* UNEMBED 的真值读出行 / LOGITS 的某一类格子：点亮时整块变青 */
+    #archSvg g[data-part="logitsCell"].on > rect:first-of-type { fill: #5fd7ea; stroke: #8fe3f2; stroke-width: .8; filter: drop-shadow(0 0 5px rgba(143,227,242,.9)); }
+    /* 113 个类号只在被点亮的那一格旁边显示 */
+    #archSvg g[data-part="logitsCell"] > text { visibility: hidden; }
+    #archSvg g[data-part="logitsCell"].on > text { visibility: visible; }
     .arch-legend { font-size: 12px; color: #9aa3b2; }
     /* —— 测试按钮 / 结果 —— */
     .test-bar { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: center; margin-top: 14px; padding-top: 12px; border-top: 1px solid #232837; }
-    #testBtn { background: #2e8b66; color: #fff; border: none; border-radius: 999px; padding: 7px 18px; font-size: 13.5px; cursor: pointer; white-space: nowrap; }
+    #testBtn { background: #2e8b66; color: #fff; border: none; border-radius: 999px; padding: 7px 18px; font-size: 13.5px; cursor: pointer; white-space: nowrap; transition: background .15s, color .15s, box-shadow .15s; }
     #testBtn:disabled { opacity: .55; cursor: wait; }
+    #testBtn.active { background: #7ce0a8; color: #06301c; box-shadow: 0 0 0 1px rgba(124,224,168,.85), 0 0 14px rgba(124,224,168,.4); }
     .test-info { font-size: 12px; color: #9aa3b2; line-height: 1.6; }
     .test-info b { color: #cfd6e0; }
     .test-result { margin-top: 12px; border: 1px solid #2c3a32; border-radius: 10px; padding: 10px 12px; background: #12161d; font-size: 13px; }
@@ -45,19 +64,15 @@
     .top5 .cl { width: 40px; font-variant-numeric: tabular-nums; }
     .top5 .lg { color: #9aa3b2; font-variant-numeric: tabular-nums; }
     .top5 .prob { margin-left: auto; color: #57c08a; font-variant-numeric: tabular-nums; }
-    #mlpBtn { background: #4a6fc5; color: #fff; border: none; border-radius: 999px; padding: 7px 18px; font-size: 13.5px; cursor: pointer; white-space: nowrap; }
-    #mlpBtn:disabled { opacity: .55; cursor: wait; }
-    #logitsBtn { background: #8a5fc5; color: #fff; border: none; border-radius: 999px; padding: 7px 18px; font-size: 13.5px; cursor: pointer; white-space: nowrap; }
-    #logitsBtn:disabled { opacity: .55; cursor: wait; }
+    #embedBtn, #attnFreqBtn, #mlpFreqBtn, #logitsFreqBtn { background: #2e8fa8; color: #fff; border: none; border-radius: 999px; padding: 7px 18px; font-size: 13.5px; cursor: pointer; white-space: nowrap; transition: background .15s, color .15s, box-shadow .15s; }
+    #embedBtn:disabled, #attnFreqBtn:disabled, #mlpFreqBtn:disabled, #logitsFreqBtn:disabled { opacity: .55; cursor: wait; }
+    #embedBtn.active, #attnFreqBtn.active, #mlpFreqBtn.active, #logitsFreqBtn.active { background: #8fe3f2; color: #06303a; box-shadow: 0 0 0 1px rgba(143,227,242,.85), 0 0 14px rgba(143,227,242,.4); }
     .sweep-result { margin-top: 12px; border: 1px solid #263a52; border-radius: 10px; padding: 10px 12px; background: #12161d; font-size: 13px; }
     .sweep-result .row { display: flex; flex-wrap: wrap; gap: 8px 22px; align-items: center; margin-top: 4px; }
     .sweep-result .kv { display: flex; gap: 6px; align-items: center; }
     .sweep-result .kv b { color: #dfe3ea; font-size: 13.5px; }
     .sweep-result canvas { width: 100%; height: auto; background: #fff; border: 1px solid #262b36; border-radius: 6px; margin-top: 8px; }
     .sweep-result select { font-size: 12.5px; padding: 2px 6px; background: #0e1016; color: #dfe3ea; border: 1px solid #2c3a52; border-radius: 6px; }
-    .l3-row { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 6px; }
-    .l3-col { flex: 1 1 0; min-width: 280px; }
-    .l3-col .sub { font-size: 12px; color: #9aa3b2; margin: 4px 0 2px; }
 
     .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
     .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow); }
@@ -109,9 +124,11 @@
 
     <div class="test-bar">
       <button id="testBtn" type="button">🧪 测试（前向推理）</button>
-      <button id="mlpBtn" type="button">🧠 MLP 循环</button>
-      <button id="logitsBtn" type="button">🔀 LOGITS 循环</button>
-      <span class="test-info">用<b>当前阶段已加载的权重</b>：测试=随机取 (a,b) 跑前向得 logits；MLP 循环=固定 a=0、扫 b，画<b>前 10 个 MLP 神经元</b>输出；LOGITS 循环=固定 a=0、扫 b，画 <b>第 1 个 logits 单元</b>。</span>
+      <button id="embedBtn" type="button">🎼 EMBED 频率</button>
+      <button id="attnFreqBtn" type="button">🎯 ATTENTION 频率</button>
+      <button id="mlpFreqBtn" type="button">🧩 MLP 频率</button>
+      <button id="logitsFreqBtn" type="button">📊 LOGITS 频率</button>
+      <span class="test-info" id="testInfo">点上面的按钮运行，结果出现在下方面板（都用<b>当前阶段已加载的权重</b>计算）。</span>
     </div>
     <div class="test-result" id="testResult" hidden>
       <div class="row">
@@ -131,53 +148,24 @@
       <div style="font-size:12px;color:#8a93a5;margin-top:8px;">上图横轴 = 113 个输出类 c（0…112；金色下划线 = 真值，红色箭头 = argmax 预测），柱高 = logits 的相对大小（减去最大后指数归一，即 softmax 概率）。</div>
     </div>
 
-    <div class="sweep-result" id="sweepResult" hidden>
+    <div class="sweep-result" id="freqResult" hidden>
       <div class="row">
-        <span class="kv">MLP 神经元 <b id="swNeuron">#0</b></span>
-        <span class="kv">固定 <b>a = 0</b></span>
-        <span class="kv">b 扫描 <span class="chip-mini" id="swRange">—</span></span>
-        <span class="kv">阶段 <span class="chip-mini" id="swStage">—</span></span>
+        <span class="kv"><b id="freqTitle" style="color:#dfe3ea;">—</b></span>
+        <span class="kv"><span id="freqSelLabel">维度</span> <select id="freqSel" title="选择要查看的维度 / 输出类"></select></span>
+        <span class="kv">保留频率数 N <select id="freqTop" title="只用幅度最大的前 N 个频率重建"></select></span>
+        <span class="kv">阶段 <span class="chip-mini" id="freqStage">—</span></span>
       </div>
-      <canvas id="cMlpSweep" width="1100" height="320"></canvas>
-      <div style="font-size:12px;color:#8a93a5;margin-top:6px;">固定 a=0、扫 b（0…P−1）时，<b>前 10 个 MLP 神经元（下标 0…9）</b>各自经 ReLU 后的输出（2 列 × 5 行；每格标题 n_k，右上角 = 该神经元最大输出，虚线 = 0 基线）。</div>
+      <div id="freqCap1" style="margin:6px 0 2px; font-size:12px; color:#9aa3b2;"></div>
+      <canvas id="cEmbedWave" width="1100" height="300"></canvas>
+      <div id="edWaveNote" style="font-size:12px;color:#8a93a5;margin-top:6px;"></div>
+      <div id="freqCap2" style="margin:14px 0 2px; font-size:12px; color:#9aa3b2;"></div>
+      <canvas id="cEmbedSpec" width="1100" height="220"></canvas>
+      <div id="edSpecNote" style="font-size:12px;color:#8a93a5;margin-top:6px;"></div>
+      <div id="freqCap3" style="margin:14px 0 2px; font-size:12px; color:#9aa3b2;"></div>
+      <canvas id="cEmbedParts" width="1100" height="660"></canvas>
+      <div id="edPartsNote" style="font-size:12px;color:#8a93a5;margin-top:6px;"></div>
     </div>
-    <div class="sweep-result" id="logitsResult" hidden>
-      <div class="row">
-        <span class="kv">UNEMBED 单元 <select id="lgSel" title="选择要查看的 logits 输出类（0…P−1）"></select></span>
-        <span class="kv">固定 <b>a = 0</b></span>
-        <span class="kv">b 扫描 <span class="chip-mini" id="lgRange">—</span></span>
-        <span class="kv">阶段 <span class="chip-mini" id="lgStage">—</span></span>
-      </div>
-      <div style="margin:6px 0 2px; font-size:12px; color:#9aa3b2;">① 固定 a = 0 · 扫 b（0…P−1）</div>
-      <canvas id="cLogitsSweep" width="1100" height="360"></canvas>
-      <div style="font-size:12px;color:#8a93a5;margin-top:6px;">x = b，y = <b>下拉框所选输出类 c</b> 的 logit 值（可为负；虚线 = 0 基线，右上角 = y 范围）。</div>
-      <div style="margin:14px 0 2px; font-size:12px; color:#9aa3b2;">② 固定 b = 0 · 扫 a（0…P−1）</div>
-      <canvas id="cLogitsSweepA" width="1100" height="180"></canvas>
-      <div style="font-size:12px;color:#8a93a5;margin-top:6px;">x = a，y = 同一输出类 c 的 logit 值（虚线 = 0 基线，右上角 = y 范围）。</div>
-      <div style="margin:14px 0 2px; font-size:12px; color:#9aa3b2;">③ 完整曲面：z = logit<sub>c</sub>(a, b)（左 = 3D 可旋转 · 粗网格概览；右 = 2D 全分辨率热图）</div>
-      <div class="l3-row">
-        <div class="l3-col">
-          <div class="sub">3D 曲面 · 拖动旋转/俯仰，悬停看 (a,b)</div>
-          <canvas id="cLogits3D" width="1100" height="520"></canvas>
-          <div style="font-size:11px;color:#8a93a5;">对 ~29×29 网格取 logit<sub>c</sub> 作为 z 高度（①② 是它在 a=0 / b=0 边上的切片）。这种分辨率画不出只有 1 格宽的对角线，看到的是模型的周期性傅里叶结构；要看“预测为 c”的位置请用右边的 2D 全分辨率热图。</div>
-        </div>
-        <div class="l3-col">
-          <div class="sub">2D 热图 · x = a（0…P−1，→）· y = b（0…P−1，↓）· 逐点全分辨率（P×P）</div>
-          <div class="row" style="gap:6px 16px; margin:4px 0 2px; font-size:12px;">
-            <span class="kv">显示量
-              <select id="lgQty" title="选择热图要画哪个量">
-                <option value="prob">softmax 概率 p(c|a,b)（推荐）</option>
-                <option value="rel">相对 logit：logit_c − mean_c′ logit_c′</option>
-                <option value="raw">原始 logit（模型解的周期条纹）</option>
-              </select>
-            </span>
-            <span class="kv">分辨率 <span class="chip-mini" id="lgProg">—</span></span>
-          </div>
-          <canvas id="cLogitsHeat" width="600" height="546"></canvas>
-          <div id="heatNote" style="font-size:11px;color:#8a93a5;"></div>
-        </div>
-      </div>
-    </div>  </section>
+  </section>
 
   <!-- 2) 权重面板 -->
   <section class="grid2">

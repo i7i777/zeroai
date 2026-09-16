@@ -160,6 +160,18 @@
 
     <h3 id="s31">3.1&ensp;傅里叶乘法算法</h3>
     <p>我们声称学到的网络使用如下算法（图 1）：</p>
+    <figure>
+      <a href="/images/fig1_architecture.png" target="_blank" title="查看原尺寸">
+        <img src="/images/fig1_architecture.png" alt="原论文 Figure 1：单层 Transformer 实现的算法（架构图 + 傅里叶乘法图解）" />
+      </a>
+      <figcaption>
+        <span class="no">图 1（原论文 Figure 1，截自 PDF）</span>
+        （左）单层 Transformer 的架构：Tokens → Embed → 4 个注意力头 → MLP → Unembed → Logits，各部件之间带残差连接；
+        （中/右）算法图解：embedding 把 $a,b$ 旋转成圆上的角度，attention 与 MLP 用三角恒等式把两次旋转合成 $a+b$，
+        输出端再旋转 $-c$，用 $\cos\big(w(a+b-c)\big)$ 读出各个 logit——它在 $c \equiv a + b \pmod{P}$ 处取到最大。
+        原图版权归原作者（arXiv:2301.05217），此处仅作学习引用；<strong>点击图片可查看原尺寸</strong>。
+      </figcaption>
+    </figure>
     <ul>
       <li>给定两个 one-hot 的 token $a,b$，用 embedding 矩阵把它们分别映射到 $\sin(w_k a),\cos(w_k a)$ 与 $\sin(w_k b),\cos(w_k b)$，其中取若干频率 $w_k=\frac{2\pi k}{P}$。</li>
       <li>用三角恒等式在 attention 与 MLP 层计算 $\cos\big(w_k(a+b)\big)$ 与 $\sin\big(w_k(a+b)\big)$：
@@ -338,7 +350,8 @@
         <tr><td>4</td><td>≈ 10k</td><td><span class="freq-badge">[11, 44, 49]</span></td></tr>
       </tbody>
     </table>
-    <p>上方图 2–8 即为 <code>python/figures/</code> 中由复现实验生成的图表（seed0 为主分析）。结果与论文一致：
+    <p>上方图 2–8 即为 <code>python/figures/</code> 中由复现实验生成的图表（seed0 为主分析）；图 1 则是原论文 Figure 1 的截图
+      （由 <code>python/_extract_fig1.py</code> 从 <code>docs/</code> 下的 PDF 裁出）。结果与论文一致：
       模型在傅里叶基下稀疏、restricted loss 先于测试损失下降、Gini 稀疏度在清理期陡升、三阶段清晰可辨。
       复现代码、运行脚本与更多图表见 <code>python/README.md</code> 与 <code>python/figures/</code>。</p>
 
