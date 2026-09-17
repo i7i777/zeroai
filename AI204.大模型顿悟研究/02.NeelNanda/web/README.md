@@ -9,6 +9,8 @@ web/
 │  └─ package.json
 ├─ tools/                 构建脚本
 │  ├─ localize_arxiv_html.py  arXiv/ar5iv 的 LaTeXML 渲染 → public/index.html + paper-en-local.html（本地完整版）
+│  ├─ translate_paper.py   逐段机翻（本地 MT 模型）→ public/assets/paper-zh.json（配合页面上的「T」按钮）
+│  ├─ paper-zh-overrides.json  人工校订层：{块下标: 带 [n] 占位符的中文}，拼装时优先于机翻
 │  └─ pdf2html.py          docs/*.pdf → public/paper-en-pdf.html（备用：从 PDF 抠字重排，依赖 PyMuPDF）
 └─ public/                前端（纯静态：html / css / js / images / assets / viz-data）
    ├─ index.html          **站点首页 = 论文英文原文（本地完整版）**，由 localize_arxiv_html.py 生成，勿手改
@@ -17,10 +19,13 @@ web/
    ├─ css/style.css
    ├─ js/main.js          目录高亮 / 阅读进度 / 服务器状态
    ├─ js/model.js         模型可视化页逻辑
+   ├─ js/paper-zh.js      论文页的「T」按钮：逐段在英文原文 / 中文机翻之间切换
    ├─ images/             复现图（来自 ../python/figures）
    └─ assets/
       ├─ ar5iv/           LaTeXML 样式表（3 个 CSS）与站点 logo
-      └─ paper-en/        英文原版插图（18 张，含 figs/ 子目录）
+      ├─ paper-en/        英文原版插图（18 张，含 figs/ 子目录）
+      ├─ paper-zh.css     「T」按钮与中文段落样式
+      └─ paper-zh.json    逐段中文译文（机翻产物，211 个块：167 段 + 44 个图注）
 ```
 
 ## 运行
@@ -45,6 +50,45 @@ node index.ts
 | `/model.html` | 模型可视化页 |
 | `/paper.pdf` | 原始英文 PDF（由后端从 `../docs/` 托管；站内已无入口链接，直接访问仍可用） |
 | `/api/meta` | JSON 元信息（服务器 / 论文 / 目录） |
+
+## 逐段中英对照：每段末尾的「T」小按钮
+
+论文页（`/`）里**每一段正文、每一个图注、以及每一个标题**（`h1…h6.ltx_title`）的末尾都有一个小小的 `T` 按钮（平时半透明，鼠标移到该元素上会变清晰）：
+
+* 点一下 → 这一段就地换成**中文机翻**（右上角 `T` 变实心，按钮提示变成「显示英文原文」）；
+* 再点一下 → 切回英文原文（原文在首次切换时缓存下来，来回切换不掉字）；
+* 译文里**公式（MathML）、引用链接、图表编号原样保留** —— 翻译时把它们当作「原子」用 `[1]` `[2]` 占位，
+  翻完再填回去，所以中文段落里的 `a,b ∈ {0,…,P−1}`、`(Power et al. 2022)`、`(Figure 2, Appendix C.2)` 都还在；
+* 译文按 **DOM 顺序**对齐（`p.ltx_p` + `figcaption.ltx_caption` + `h1…h6.ltx_title`，
+  共 260 块 = 167 段 + 44 个图注 + 49 个标题），不依赖元素 id；没译文的块不会出现按钮。
+
+译文由 `tools/translate_paper.py` 用**本地 MT 模型**生成（默认 NLLB-200-distilled-600M，走 `HF_ENDPOINT`
+镜像下载到本地缓存），整段落在 `public/assets/paper-zh.json`：
+
+```bash
+cd web
+python tools/translate_paper.py --list             # 只列出提取到的 211 个块
+python tools/translate_paper.py --limit 5          # 试译 5 块
+python tools/translate_paper.py --model nllb       # 全量机翻（断点续译：已翻过的分块自动跳过）
+python tools/translate_paper.py --stage assemble   # 改完词表/标点规则后只用缓存重新拼装
+```
+
+工具的设计要点（都在脚本头部注释里）：
+
+| 问题 | 做法 |
+| --- | --- |
+| 段落里有公式/引用，整段喂给 MT 会毁掉排版 | 把 `<math>` `<cite>` `ltx_ref` `ltx_tag` 抽成「原子」，正文里只留下 `[n]` 占位符，翻完按占位符填回 |
+| 加粗短语（`Phase Changes.`）也要翻，但得保留加粗 | 这类原子单独翻内部文字，回填时连同标签一起塞回去 |
+| 占位符被模型吃掉 | 丢的是**公式** → 该块回退英文（宁可不出中文，也不能让公式消失）；丢的是**引用/编号** → 原样附到段尾 |
+| 长段落超出模型 512 token | 按句子切块（≤320 词）逐块翻译再按顺序拼回 |
+| 机翻术语不准（cross-entropy 译成「跨机体损失」、grokking 译成「车」） | 拼装阶段过一遗 `POLISH` 词表 + `GLOSSARY` 短语词典 + 半角标点→中文标点 + 中英文之间补空格，改了只需 `--stage assemble` |
+| 中断/重跑 | 逐条原始机翻缓存在 `assets/paper-zh.cache.json`（每 40 段落一次盘），重跑自动跳过已完成的 |
+| 以后往页面里插新块（例如把标题也纳入翻译） | 缓存 key 用**块内容哈希**而不是下标，插入新块不会把已有译文错位（只译新增的那几块） |
+| 有的段落整段也翻不好（数学很密，实测 25/211） | 自动退到「按占位符切成小段逐段翻」，占位符是自己拼回去的，必定不丢；现全部 211 块均有译文 |
+| 摘要、标题这类关键内容想要更好的译文 | 抄到 `tools/paper-zh-overrides.json`（key = 块下标），拼装时优先于机翻；`_atoms` 可单独指定某个短语。**现在 49 个标题 + 摘要都是手写定稿的** |
+
+> 译文的版权归原作者，仅供本地对照阅读；机翻质量有限（术语已做词表修正，但长难句仍可能有偏差），
+> 引用原文请以上方的英文段落或原始 PDF 为准。
 
 > 英文正文**没有被手工抄写或改写**进本仓库。排版正确的英文源见
 > **arXiv 官方 HTML 版**：<https://arxiv.org/html/2301.05217v3>（该页无 `X-Frame-Options` / `frame-ancestors` 限制，可直接内嵌；

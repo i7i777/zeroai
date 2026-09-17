@@ -195,11 +195,14 @@ def build(url: str, outs: list[Path]) -> dict:
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Progress measures for grokking via mechanistic interpretability · 英文原文（本地完整版）</title>
 {"".join(f'<link media="all" rel="stylesheet" href="/assets/ar5iv/{h.rsplit("/", 1)[-1]}">' for h in css_hrefs)}
+<link media="all" rel="stylesheet" href="/assets/paper-zh.css">
 {HEAD_STYLE}</head>
 <body>
 {SITEBAR.format(src=url, official=ARXIV_HTML, abs_=ARXIV_ABS)}
 {body}
 {FOOTER.format(src=url, official=ARXIV_HTML, today=date.today().isoformat())}
+<!-- 每段末尾的「T」按钮：点击在该段的英文原文 / 中文机翻之间切换（译文由 tools/translate_paper.py 生成） -->
+<script src="/js/paper-zh.js" defer></script>
 </body>
 </html>
 """

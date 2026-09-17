@@ -1,0 +1,53 @@
+/* 段落末尾的「T」按钮 + 中文译文样式（配合 js/paper-zh.js） */
+
+.zh-tog {
+  display: inline-block;
+  vertical-align: 1px;
+  margin: 0 0 0 6px;
+  padding: 0 5px;
+  font: 600 11px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color: #8b2f2f;
+  background: #fffdf9;
+  border: 1px solid #d9bf9d;
+  border-radius: 4px;
+  cursor: pointer;
+  opacity: .55;
+  transition: opacity .15s, background .15s, color .15s, border-color .15s;
+}
+
+/* 鼠标移到段落/图注/标题上时按钮变清晰 */
+p:hover > .zh-tog,
+figcaption:hover > .zh-tog,
+h1:hover > .zh-tog,
+h2:hover > .zh-tog,
+h3:hover > .zh-tog,
+h4:hover > .zh-tog,
+h5:hover > .zh-tog,
+h6:hover > .zh-tog,
+.zh-tog:focus-visible { opacity: 1; }
+
+.zh-tog:hover { background: #8b2f2f; color: #fff; border-color: #8b2f2f; }
+
+.zh-tog.on { opacity: 1; background: #8b2f2f; color: #fff; border-color: #8b2f2f; }
+
+.zh-tog[disabled] { cursor: progress; }
+
+/* 显示中文的那一段：给个极淡的底纹，方便一眼认出哪些段落已经切换成中文（标题不加底纹） */
+p.zh-on,
+figcaption.zh-on { background: linear-gradient(90deg, rgba(139, 47, 47, .045), rgba(139, 47, 47, .01)); }
+
+/* 中文用黑体更清楚（原文正文是 Noto Serif 衬线体） */
+.zh-on {
+  font-family: "PingFang SC", "Microsoft YaHei", "Noto Sans CJK SC", "Source Han Sans SC",
+               var(--text-font-family, sans-serif);
+  line-height: 1.85;
+}
+
+h1.zh-on, h2.zh-on, h3.zh-on, h4.zh-on, h5.zh-on, h6.zh-on { line-height: 1.5; }
+
+/* 深色主题（若浏览器/系统切到深色）下别用浅色底纹 */
+@media (prefers-color-scheme: dark) {
+  .zh-tog { background: #241f1c; color: #e0a49b; border-color: #4a3a33; }
+  .zh-tog:hover, .zh-tog.on { background: #8b2f2f; color: #fff; border-color: #8b2f2f; }
+  p.zh-on, figcaption.zh-on { background: rgba(255, 255, 255, .04); }
+}
