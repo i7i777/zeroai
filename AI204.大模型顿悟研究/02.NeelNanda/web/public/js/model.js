@@ -9,8 +9,9 @@
   const pad6 = (n) => String(n).padStart(6, "0");
 
   // ---------------- 快照解析 ----------------
-  async function fetchJSON(u) {
-    const r = await fetch(u);
+  /** 取 JSON；默认带 no-cache 条件请求，避免 split.json 这类会被重新生成的文件取到旧副本 */
+  async function fetchJSON(u, opts) {
+    const r = await fetch(u, opts);
     if (!r.ok) throw new Error(`${u} -> ${r.status}`);
     return r.json();
   }
@@ -121,6 +122,8 @@
     index: null,      // /viz-data/index.json
     run: null, seed: null,
     snapCache: new Map(),     // (run|seed|epoch) → mats（多 seed 参数对比用，带缓存）
+    splitCache: new Map(),    // (run|seed) → 训练/测试划分位图（模加法表用）
+    addGen: 0,                // 模加法表的重绘代号，用来丢弃过期的异步结果（切 seed 时会变）
     seedMode: "curve",        // ⓪ 卡片的视角：curve = 效果，param = 参数（W_E 频率谱）
     paramGen: 0,              // 参数视图的“代”号，用来丢弃过期的异步结果
     idx: null,        // 当前 (run,seed) 的 index（config/curve/epochs）
@@ -395,6 +398,118 @@
     if (epoch < g) return "电路形成期 (circuit formation)";
     if (epoch < g * 1.5) return "清理期 (cleanup)";
     return "收敛 (泛化解)";
+  }
+
+  // ===================================================================
+  // 模加法表：P×P 个输入对 (a, b) 的训练 / 测试划分
+  // ===================================================================
+  const ADD_CELL = 8;                         // 每格的画布像素（113×8 = 904，显示时缩到 400px）
+  const COL_TRAIN = "#4d8fd6", COL_TEST = "#ff7a6b";
+
+  /** 取该 (run,seed) 的完整训练掩码（split.json：位图 + base64） */
+  async function loadSplit() {
+    const key = `${state.run}#${state.seed}`;
+    if (state.splitCache.has(key)) return state.splitCache.get(key);
+    let sp = null;
+    try {
+      const d = await fetchJSON(`/viz-data/${state.run}/seed${state.seed}/split.json`,
+                                { cache: "no-cache" });
+      const bin = atob(d.train);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      sp = { p: d.p, n: d.n, nTrain: d.n_train, nTest: d.n_test, frac: d.frac_train, bytes };
+    } catch (e) {
+      console.warn("split.json 取不到（跑 python/_gen_testpairs.py 生成）：", e);
+    }
+    state.splitCache.set(key, sp);
+    return sp;
+  }
+
+  /** 第 (a,b) 对是训练集吗（位序：第 j 字节的第 i 位 = mask[j*8 + i]） */
+  function isTrainCell(sp, a, b) {
+    const i = a * sp.p + b;
+    return ((sp.bytes[i >> 3] >> (i & 7)) & 1) === 1;
+  }
+
+  async function drawAddTable() {
+    const cv = $("#cAdd");
+    if (!cv || !state.run || state.seed == null) return;
+    const gen = ++state.addGen;
+    const sp = await loadSplit();
+    if (gen !== state.addGen) return;                     // 期间又切了 seed，丢弃这次结果
+    const hint = $("#addHint"), legend = $("#addLegend"), tip = $("#addTip");
+    if (tip) tip.hidden = true;
+    const ctx = cv.getContext("2d");
+    ctx.fillStyle = "#11141d";
+    ctx.fillRect(0, 0, cv.width, cv.height);
+    if (!sp) {
+      cv.hidden = true;
+      if (hint) hint.textContent = "没有 split.json";
+      if (legend) legend.textContent = "缺 split.json：跑一次 python/_gen_testpairs.py 即可补上（只算数据划分，不用重训）";
+      return;
+    }
+    cv.hidden = false;
+    const p = sp.p, cell = ADD_CELL;
+    if (cv.width !== p * cell) { cv.width = cv.height = p * cell; }
+
+    // 坐标轴刻度：写在 HTML 里（画布缩到 400px 后 canvas 里的 6px 小字看不清）
+    const axX = $("#addAxisX"), axY = $("#addAxisY");
+    if (axX && axY) {
+      if (axX.dataset.p !== String(p)) {
+        const pos = (k) => `${(((k + 0.5) / p) * 100).toFixed(3)}%`;
+        let spanX = "", spanY = "";
+        for (let k = 0; k < p; k += 10) {
+          spanX += `<span style="left:${pos(k)}">${k}</span>`;
+          spanY += `<span style="top:${pos(k)}">${k}</span>`;
+        }
+        axX.innerHTML = spanX;
+        axY.innerHTML = spanY;
+        axX.dataset.p = axY.dataset.p = String(p);
+      }
+    }
+
+    // 每格一对输入：蓝 = 训练集，红 = 留出（测试）
+    for (let a = 0; a < p; a++) {
+      const y = a * cell;
+      for (let b = 0; b < p; b++) {
+        ctx.fillStyle = isTrainCell(sp, a, b) ? COL_TRAIN : COL_TEST;
+        ctx.fillRect(b * cell, y, cell - 1, cell - 1);
+      }
+    }
+
+    // 当前测试样本那一格加白描边
+    const s = state.sample;
+    if (s && s.a < p && s.b < p) {
+      ctx.strokeStyle = "#ffffff"; ctx.lineWidth = 2;
+      ctx.strokeRect(s.b * cell - 1, s.a * cell - 1, cell + 1, cell + 1);
+    }
+
+    const pc = (n) => `${((100 * n) / sp.n).toFixed(1)}%`;
+    if (hint) hint.textContent = `${p}×${p} = ${sp.n} 对 · 横轴 b / 纵轴 a · seed ${state.seed}`;
+    if (legend) {
+      legend.innerHTML =
+        `<span><b>训练集</b> ${sp.nTrain} 对（${pc(sp.nTrain)}）</span>` +
+        `<span><b>留出（测试）</b> ${sp.nTest} 对（${pc(sp.nTest)}）</span>` +
+        `<span>P = ${p} · frac_train = ${sp.frac}</span>`;
+    }
+  }
+
+  /** 鼠标悬停显示这一对 (a,b) 的真值与归属 */
+  function addTableTip(ev) {
+    const cv = $("#cAdd"), tip = $("#addTip");
+    if (!cv || !tip || cv.hidden) return;
+    const sp = state.splitCache.get(`${state.run}#${state.seed}`);
+    if (!sp) return;
+    const r = cv.getBoundingClientRect();
+    const b = Math.floor(((ev.clientX - r.left) * (cv.width / r.width)) / ADD_CELL);
+    const a = Math.floor(((ev.clientY - r.top) * (cv.height / r.height)) / ADD_CELL);
+    if (a < 0 || b < 0 || a >= sp.p || b >= sp.p) { tip.hidden = true; return; }
+    const wr = cv.parentElement.parentElement.getBoundingClientRect();
+    tip.hidden = false;
+    tip.style.left = `${ev.clientX - wr.left}px`;
+    tip.style.top = `${ev.clientY - wr.top}px`;
+    tip.innerHTML = `a = <b>${a}</b>, b = <b>${b}</b> → c = <b>${(a + b) % sp.p}</b> · ` +
+                    (isTrainCell(sp, a, b) ? "训练集" : "留出（测试）");
   }
 
   // -------------------------------------------------------------------
@@ -832,6 +947,7 @@
     state.cfg = idx.config;
     state.epochs = (idx.epochs || []).slice().sort((a, b) => a - b);
     clearTest();
+    drawAddTable();               // 数据划分与 seed 有关（numpy 随机划分），换 seed 要重画
     $("#dims").textContent = `P=${idx.config.p} · d=${idx.config.d_model} · heads=${idx.config.n_heads} · MLP=${idx.config.n_mlp}`;
     buildArch(idx.config);
     if (state.epochs.length === 0) {
@@ -1204,6 +1320,7 @@
       state.sample = { a, b, c, pred, correct };
       state.lastTest = { a, b, c, src };   // 记住样本，切阶段后可沿用重算
       buildArch(cfg, state.sample);
+      drawAddTable();                      // 模加法表上给这个样本加白描边
     } catch (err) {
       console.error(err);
       alert(`测试失败：${err.message}`);
@@ -1722,6 +1839,15 @@
       const r = $("#freqResult");
       if (r && !r.hidden && state.freqSrc) runFreqView(state.freqSrc);
     });
+    // 模加法表：鼠标悬停显示这一对 (a,b)
+    const addCv = $("#cAdd");
+    if (addCv) {
+      addCv.addEventListener("mousemove", addTableTip);
+      addCv.addEventListener("mouseleave", () => {
+        const t = $("#addTip");
+        if (t) t.hidden = true;
+      });
+    }
     onRun();
   }
 

@@ -3,8 +3,11 @@
 用法：python _gen_testpairs.py
 说明：
 - 使用与训练完全相同的 numpy 划分（make_modular_addition_data(p, frac, seed)）。
-- 每个 seed 写 test_pairs.json：{kind,p,frac_train,seed,n_test_total,a:[..],b:[..],c:[..]}
-  从中随机抽 N_SAMPLE 个测试对（带确定种子），供前端“测试”按钮取数。
+- 每个 seed 写两个文件：
+  * test_pairs.json：{kind,p,frac_train,seed,n_test_total,a:[..],b:[..],c:[..]}
+    从中随机抽 N_SAMPLE 个测试对（带确定种子），供前端“测试”按钮取数。
+  * split.json：整张 P×P 划分的位图（base64），供前端画“模加法表”（蓝=训练、红=留出）。
+    这个由 grokking.vizexport.export_split() 写（只算划分，不读快照）。
 - 不重训，只算数据划分，几秒完成。写入不干扰正在后台导出的快照。
 """
 import json
@@ -15,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]          # .../02.NeelNanda
 sys.path.insert(0, str(ROOT / "python"))
 
 from grokking.data import make_modular_addition_data  # noqa: E402
+from grokking.vizexport import export_split          # noqa: E402
 
 VIZ = ROOT / "web" / "public" / "viz-data"
 N_SAMPLE = 800
@@ -56,7 +60,9 @@ def main() -> None:
             }
             (seed_dir / "test_pairs.json").write_text(
                 json.dumps(out, ensure_ascii=False), encoding="utf-8")
-            print(f"wrote {seed_dir}  n_test={n}  sample={take}", flush=True)
+            split_path = export_split(cfg, seed, seed_dir)
+            print(f"wrote {seed_dir}  n_test={n}  sample={take}  "
+                  f"split={split_path.stat().st_size}B", flush=True)
             written += 1
     print(f"done, {written} files", flush=True)
 

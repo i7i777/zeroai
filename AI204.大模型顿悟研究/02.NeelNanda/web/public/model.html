@@ -53,16 +53,34 @@
     .seed-cap b { color: #dfe3ea; }
     .seed-cell.on .seed-cap b { color: #8fe3f2; }
     .seed-fb { font-size: 10px; color: #ffb020; border: 1px solid #5b4a24; border-radius: 999px; padding: 0 6px; margin-left: 4px; }
+    /* 模加法表（训练/测试划分）卡片 */
+    .add-card { background: #0e1016; color: #dfe3ea; border-radius: 14px; padding: 16px; margin-bottom: 22px; }
+    .add-card h2 { color: #fff; border: none; margin: 0 0 10px; font-size: 17px; }
+    #addLegend { justify-content: center; }
+    .add-note { max-width: 860px; margin-left: auto; margin-right: auto; }
+    .add-wrap { position: relative; display: block; }
+    /* 画布只画格子；坐标轴刻度用 HTML 写（缩到一半后 canvas 里的字会看不清） */
+    .add-plot { position: relative; width: 430px; height: 414px; margin: 0 auto; }
+    #cAdd { position: absolute; left: 26px; top: 14px; width: 400px; height: 400px; border-radius: 6px; cursor: crosshair; }
+    .add-axis { position: absolute; font-size: 10px; line-height: 1; color: #7f8ba3; font-family: ui-monospace, SFMono-Regular, monospace; }
+    .add-axis.top { left: 26px; top: 0; width: 400px; height: 14px; }
+    .add-axis.top span { position: absolute; transform: translateX(-50%); }
+    .add-axis.side { left: 0; top: 14px; width: 26px; height: 400px; }
+    .add-axis.side span { position: absolute; right: 4px; transform: translateY(-50%); }
+    .add-tip {
+      position: absolute; z-index: 5; pointer-events: none; transform: translate(-50%, -130%);
+      background: #1b2130; border: 1px solid #3a4560; border-radius: 8px; padding: 4px 9px;
+      font-size: 12px; color: #dfe3ea; white-space: nowrap; box-shadow: 0 4px 14px rgba(0, 0, 0, .45);
+    }
+    .add-tip b { color: #8fe3f2; }
     /* 准确率曲线卡片（与结构图同为深色卡片，放在最上面） */
-    .acc-card { background: #0e1016; color: #dfe3ea; border-radius: 14px; padding: 16px; margin-bottom: 22px; }
-    .acc-card h2 { color: #fff; border: none; margin: 0 0 10px; font-size: 17px; }
+    .acc-card { background: #0e1016; color: #dfe3ea; border-radius: 14px; padding: 16px; margin-bottom: 22px; }    .acc-card h2 { color: #fff; border: none; margin: 0 0 10px; font-size: 17px; }
     .acc-card canvas { display: block; width: 100%; height: auto; border-radius: 8px; touch-action: none; cursor: crosshair; }
     .acc-legend { display: flex; flex-wrap: wrap; gap: 5px 20px; margin-top: 10px; font-size: 12.5px; color: #9aa3b2; }
     .acc-legend b { color: #dfe3ea; }
     .acc-note { font-size: 12px; color: #8a93a5; margin-top: 8px; line-height: 1.7; }
     .sw { display: inline-block; width: 16px; height: 3px; border-radius: 2px; vertical-align: 3px; margin-right: 6px; }
-    .arch-card { background: #0e1016; color: #dfe3ea; border-radius: 14px; padding: 16px; overflow-x: auto; margin-bottom: 22px; }
-    .arch-card h2 { color: #fff; border: none; margin: 0 0 6px; font-size: 17px; }
+    .arch-card { background: #0e1016; color: #dfe3ea; border-radius: 14px; padding: 16px; overflow-x: auto; margin-bottom: 22px; }    .arch-card h2 { color: #fff; border: none; margin: 0 0 6px; font-size: 17px; }
     .arch-card svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
     /* 结构图按级高亮：当前查看的那一级描边变亮 + 发光 */
     #archSvg g[data-stage] > rect:first-of-type { transition: stroke .2s, stroke-width .2s; }
@@ -145,6 +163,28 @@
 </div>
 
 <main class="panels">
+  <!-- 模加法表：P×P 个输入对的训练/测试划分 -->
+  <section class="add-card">
+    <h2>🔲 模加法表（P×P 输入对的数据划分）<span class="seeds-hint" id="addHint">—</span></h2>
+    <div class="add-wrap">
+      <div class="add-plot" id="addPlot">
+        <div class="add-axis top" id="addAxisX"></div>
+        <div class="add-axis side" id="addAxisY"></div>
+        <canvas id="cAdd" width="904" height="904" role="img" aria-label="模加法表：每个格子是一对输入 (a, b)，蓝色为训练集、红色为留出测试集"></canvas>
+      </div>
+      <div class="add-tip" id="addTip" hidden></div>
+    </div>
+    <div class="acc-legend" id="addLegend">—</div>
+    <div class="acc-note add-note">
+      每格 = 一对输入 <b>(a, b)</b>（纵轴 a、横轴 b，各 0…P−1，共 P² = 12 769 对）：
+      <span class="sw" style="background:#4d8fd6"></span>蓝 = <b>训练集</b>（frac_train = 0.3），
+      <span class="sw" style="background:#ff7a6b"></span>红 = <b>留出集</b>（测试用）。
+      划分来自训练时同一段 numpy 代码（<code>rng = np.random.default_rng(seed); perm = rng.permutation(P*P)</code>，
+      前 30% 当训练集），所以<b>换 Seed 会换出一张完全不同的表</b>——这也是同一套超参数下各 seed 的唯一数据侧差异。
+      鼠标移到格子上可看这一对的 (a, b)、真值和 c = (a+b) mod P 以及它属于哪一侧；运行过「测试」后，当前样本那格会加白色描边。
+    </div>
+  </section>
+
   <!-- 0) 多 seed 横向比较 -->
   <section class="seeds-card">
     <h2>⓪ 各 seed 横向比较 <span class="seeds-hint" id="seedsHint">—</span></h2>

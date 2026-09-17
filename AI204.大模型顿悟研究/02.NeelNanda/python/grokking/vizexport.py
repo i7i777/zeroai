@@ -18,9 +18,15 @@ Snapshot format (one `.bin` per epoch):
 In addition an `index.json` is kept per (run, seed) listing the available
 epochs and a down-sampled training curve, and one global
 `web/public/viz-data/index.json` aggregates everything for the front end.
+
+`export_split()` 另外给每个 seed 写一份 `split.json`：整张 P×P 训练/测试划分的**位图**
+（base64），供前端画「模加法表」——蓝 = 训练集、红 = 留出（测试）集。
+它只用 `grokking.data.make_modular_addition_data`（与训练完全同一段代码）重算划分，
+不读快照、不重训，所以随时可以补写。
 """
 from __future__ import annotations
 
+import base64
 import json
 import struct
 from pathlib import Path
@@ -99,6 +105,40 @@ def build_snapshot(model: OneLayerTransformer, run: str, seed: int, epoch: int,
     out += hbytes
     out += body.tobytes()
     return bytes(out)
+
+
+# --------------------------------------------------------------------------- #
+# 数据划分（供前端画“模加法表”）
+# --------------------------------------------------------------------------- #
+def export_split(cfg: Dict, seed: int, seed_dir: Path) -> Path:
+    """写出该 seed 的完整 P×P 训练/测试划分（位图，base64）→ `split.json`。
+
+    用的是与训练**完全相同**的那段 numpy 代码（`p*grokking.data.make_modular_addition_data`：
+    `rng.permutation` 后前 `frac_train` 部分当训练集），所以不重训、不读快照也能量出来，
+    前端「模加法表」就是拿它把 (a, b) 一格一格涂成蓝（训练）/ 红（留出）。
+    """
+    import base64
+
+    from .data import make_modular_addition_data
+
+    p = int(cfg["p"])
+    frac = float(cfg.get("frac_train", 0.3))
+    data = make_modular_addition_data(p, frac, int(seed))
+    # 注意：np.packbits 默认是 MSB 先行，而前端按 LSB 先行解（第 j 字节的第 i 位 = mask[j*8+i]），
+    # 这里必须显式指定 little，否则每 8 格里会整体错位（1 的个数不变，肉眼看不出，但格子是对错的）。
+    packed = np.packbits(data.train_mask, bitorder="little")
+    out = {
+        "kind": "numpy split (与训练互斥)",
+        "p": p, "frac_train": frac, "seed": int(seed),
+        "n": int(data.a.size),
+        "n_train": int(data.train_mask.sum()),
+        "n_test": int(data.test_mask.sum()),
+        "encoding": "bits-lsb-first-base64",
+        "train": base64.b64encode(packed.tobytes()).decode("ascii"),
+    }
+    path = seed_dir / "split.json"
+    path.write_text(json.dumps(out, ensure_ascii=False), encoding="utf-8")
+    return path
 
 
 # --------------------------------------------------------------------------- #

@@ -15,7 +15,7 @@ web/
 └─ public/                前端（纯静态：html / css / js / images / assets / viz-data）
    ├─ index.html          **站点首页 = 论文英文原文（本地完整版）**，由 localize_arxiv_html.py 生成，勿手改
    ├─ paper-en-local.html 内容与首页完全相同（保留给旧链接/书签）
-   ├─ model.html          模型可视化（多 seed 对比 / 准确率曲线 / 结构图 / 测试 / 频率面板）
+   ├─ model.html          模型可视化（模加法表 / 多 seed 对比 / 准确率曲线 / 结构图 / 测试 / 频率面板）
    ├─ css/style.css
    ├─ js/main.js          目录高亮 / 阅读进度 / 服务器状态
    ├─ js/model.js         模型可视化页逻辑
@@ -25,7 +25,7 @@ web/
       ├─ ar5iv/           LaTeXML 样式表（3 个 CSS）与站点 logo
       ├─ paper-en/        英文原版插图（18 张，含 figs/ 子目录）
       ├─ paper-zh.css     「T」按钮与中文段落样式
-      └─ paper-zh.json    逐段中文译文（机翻产物，211 个块：167 段 + 44 个图注）
+      └─ paper-zh.json    逐段中文译文（机翻产物，260 个块：167 段 + 44 个图注 + 49 个标题）
 ```
 
 ## 运行
@@ -125,6 +125,18 @@ python web/tools/pdf2html.py
 只丢弃页眉/页码/水印与图内文字（`pdf2html.py --help` 与脚本头部注释里有完整说明）。
 
 ## 模型可视化页（`model.html`）
+页面最上面是「🔲 模加法表」卡片（`#cAdd`）：把 P×P = 12 769 对输入 (a, b) 画成一张表，
+**蓝 = 训练集（3831 对，30%）、红 = 留出（8938 对，70%）**，鼠标悬停显示这一对的
+`a / b / c = (a+b) mod P` 与归属；点过「测试」后当前样本那格加白描边。
+
+数据来自每个 seed 的 `viz-data/<run>/seed<n>/split.json`：`grokking.vizexport.export_split()` 用
+**与训练完全相同**的那段 numpy 划分（`np.random.default_rng(seed)` → `permutation(P*P)`，前 `frac_train` 当训练集）
+把训练集打包成位图（base64），前端解出后逐格涂色。位序约定：**LSB 先行** ——
+第 j 字节的**第 i 位**（`(byte >> (i & 7)) & 1`）= `mask[j*8 + i]`；
+导出侧因此必须写 `np.packbits(mask, bitorder="little")`（numpy 默认是 MSB 先行，写错每 8 格会整体错位，
+而 1 的个数不变、肉眼看不出，只有逐位比对才发现）。划分只依赖 seed，所以**换 Seed 会换出一张完全不同的表**——
+这也是同一套超参数下各 seed 唯一的数据侧差异。缺文件跑一次 `python _gen_testpairs.py` 即可补上（只算划分，不重训）。
+
 页面顶部是「⓪ 各 seed 横向比较」卡片，一行一格、共 5 格，顶部有两个视角切换：
 
 * **📈 效果：准确率曲线** —— 每格画该 seed 的训练/测试准确率曲线（绿虚线 = 顿悟点，金虚线只画在当前选中的格子里），
