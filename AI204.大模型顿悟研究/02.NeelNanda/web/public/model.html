@@ -14,14 +14,53 @@
     .viz-toolbar select { padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: #fff; max-width: 300px; }
     .viz-toolbar .chip { font-size: 12px; color: var(--ink-soft); }
     .viz-toolbar .chip b { color: var(--accent); }
-    #loadBtn { background: var(--accent); color: #fff; border: none; border-radius: 999px; padding: 6px 18px; font-size: 13px; cursor: pointer; }
-    #loadBtn:disabled { opacity: .5; cursor: wait; }
+    /* 权重是自动载入的：这里只显示状态，不是按钮 */
+    .load-status {
+      display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+      min-width: 116px; padding: 3px 12px; border-radius: 999px;
+      background: #ecebe7; font-size: 12px; color: var(--ink-soft);
+    }
+    .load-status.busy { color: var(--accent); }
+    .load-status.err { background: #f6dede; color: #8b2f2f; }
     .stage-pill { font-size: 12px; padding: 2px 10px; border-radius: 999px; background: #eee; }
     .stage-pill.memorize { background: #dbe7ff; color: #1a4fd8; }
     .stage-pill.circuit { background: #ffe7c7; color: #b45f06; }
     .stage-pill.cleanup { background: #d8f5dd; color: #1d7a33; }
 
     .panels { max-width: 1180px; margin: 0 auto; padding: 22px 20px 80px; }
+    /* 多 seed 横向比较卡片 */
+    .seeds-card { background: #0e1016; color: #dfe3ea; border-radius: 14px; padding: 16px; margin-bottom: 22px; }
+    .seeds-card h2 { color: #fff; border: none; margin: 0 0 12px; font-size: 17px; display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+    .seeds-hint { font-size: 12px; font-weight: 400; color: #8a93a5; }
+    .seed-modes { display: flex; align-items: center; gap: 8px; margin: 0 0 12px; flex-wrap: wrap; }
+    .seed-modes button {
+      font-size: 12.5px; padding: 4px 13px; border-radius: 999px; cursor: pointer;
+      border: 1px solid #2b3345; background: #11141d; color: #9aa3b2;
+      transition: border-color .15s, color .15s, background .15s;
+    }
+    .seed-modes button:hover:not(.on) { border-color: #3a4560; color: #dfe3ea; }
+    .seed-modes button.on { border-color: #8fe3f2; background: #8fe3f2; color: #0e1016; }
+    .seed-row { display: flex; gap: 12px; flex-wrap: wrap; }
+    .seed-cell {
+      flex: 1 1 176px; min-width: 164px; padding: 8px 8px 6px;
+      background: #11141d; border: 1px solid #232a38; border-radius: 10px; cursor: pointer;
+      transition: border-color .15s, background .15s, box-shadow .15s;
+    }
+    .seed-cell:hover { border-color: #3a4560; }
+    .seed-cell.on { border-color: #8fe3f2; background: #141a26; box-shadow: 0 0 12px rgba(143, 227, 242, .35); }
+    .seed-cell canvas { display: block; width: 100%; height: auto; border-radius: 6px; }
+    .seed-cap { margin-top: 6px; font-size: 11.5px; line-height: 1.5; color: #9aa3b2; }
+    .seed-cap b { color: #dfe3ea; }
+    .seed-cell.on .seed-cap b { color: #8fe3f2; }
+    .seed-fb { font-size: 10px; color: #ffb020; border: 1px solid #5b4a24; border-radius: 999px; padding: 0 6px; margin-left: 4px; }
+    /* 准确率曲线卡片（与结构图同为深色卡片，放在最上面） */
+    .acc-card { background: #0e1016; color: #dfe3ea; border-radius: 14px; padding: 16px; margin-bottom: 22px; }
+    .acc-card h2 { color: #fff; border: none; margin: 0 0 10px; font-size: 17px; }
+    .acc-card canvas { display: block; width: 100%; height: auto; border-radius: 8px; touch-action: none; cursor: crosshair; }
+    .acc-legend { display: flex; flex-wrap: wrap; gap: 5px 20px; margin-top: 10px; font-size: 12.5px; color: #9aa3b2; }
+    .acc-legend b { color: #dfe3ea; }
+    .acc-note { font-size: 12px; color: #8a93a5; margin-top: 8px; line-height: 1.7; }
+    .sw { display: inline-block; width: 16px; height: 3px; border-radius: 2px; vertical-align: 3px; margin-right: 6px; }
     .arch-card { background: #0e1016; color: #dfe3ea; border-radius: 14px; padding: 16px; overflow-x: auto; margin-bottom: 22px; }
     .arch-card h2 { color: #fff; border: none; margin: 0 0 6px; font-size: 17px; }
     .arch-card svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
@@ -32,13 +71,11 @@
     #archSvg g[data-vec] > rect:first-of-type { transition: stroke .2s, stroke-width .2s, filter .2s; }
     #archSvg g[data-vec].on > rect:first-of-type { stroke: #8fe3f2; stroke-width: 2.6; filter: drop-shadow(0 0 8px rgba(143,227,242,.9)); }
     #archSvg g[data-vec].on .vecName { fill: #8fe3f2; }
-    /* 其它级同样可以细化到层内子模块（data-part），例如 ATTENTION 的「Σ 4 头输出 → W_O」、MLP 的 W_out */
+    /* 其它级同样可以细化到层内子模块（data-part），例如 ATTENTION 的「Σ 4 头输出 → W_O」、MLP 的输出层 */
     #archSvg g[data-part] > rect:first-of-type { transition: stroke .2s, stroke-width .2s, filter .2s; }
     #archSvg g[data-part].on > rect:first-of-type { stroke: #8fe3f2; stroke-width: 2.6; stroke-dasharray: none; filter: drop-shadow(0 0 8px rgba(143,227,242,.9)); }
     #archSvg g[data-part].on .partName { fill: #8fe3f2; }
-    /* 子层内部的一整列结点（如 MLP 的输出列）一起点亮，避免小圆点看不出来 */
-    #archSvg g[data-part].on .partHl circle { fill: #5fd7ea; stroke: #8fe3f2; stroke-width: 1; }
-    /* UNEMBED 的真值读出行 / LOGITS 的某一类格子：点亮时整块变青 */
+    /* LOGITS 的某一类格子：点亮时整块变青 */
     #archSvg g[data-part="logitsCell"].on > rect:first-of-type { fill: #5fd7ea; stroke: #8fe3f2; stroke-width: .8; filter: drop-shadow(0 0 5px rgba(143,227,242,.9)); }
     /* 113 个类号只在被点亮的那一格旁边显示 */
     #archSvg g[data-part="logitsCell"] > text { visibility: hidden; }
@@ -74,13 +111,6 @@
     .sweep-result canvas { width: 100%; height: auto; background: #fff; border: 1px solid #262b36; border-radius: 6px; margin-top: 8px; }
     .sweep-result select { font-size: 12.5px; padding: 2px 6px; background: #0e1016; color: #dfe3ea; border: 1px solid #2c3a52; border-radius: 6px; }
 
-    .grid2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
-    .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 14px 16px; box-shadow: var(--shadow); }
-    .panel h3 { margin: 0 0 10px; font-size: 15px; display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-    .panel canvas { width: 100%; height: auto; border: 1px solid var(--line); border-radius: 6px; background: #fff; image-rendering: pixelated; }
-    .panel .note { font-size: 12px; color: var(--ink-soft); margin-top: 6px; }
-    .matrix-picker { margin: 6px 0; }
-    .matrix-picker select { padding: 3px 6px; font-size: 12.5px; }
     .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid #ccc; border-top-color: var(--accent); border-radius: 50%; animation: rot .8s linear infinite; vertical-align: -2px; }
     @keyframes rot { to { transform: rotate(360deg); } }
   </style>
@@ -95,8 +125,7 @@
       <span>顿悟现象研究 <small>· 模型可视化</small></span>
     </a>
     <nav class="main">
-      <a href="/paper-zh.html">论文中文翻译</a>
-      <a href="/paper.pdf" target="_blank">原文 PDF</a>
+      <a href="/">首页</a>
       <a class="btn" href="/model.html">🧬 模型可视化</a>
     </nav>
   </div>
@@ -110,17 +139,43 @@
     <span><label for="epSlider">阶段(epoch)</label><input type="range" id="epSlider" min="0" max="0" value="0" style="width:200px" />
       <span class="chip" id="epLabel"></span></span>
     <span class="stage-pill memorize" id="stagePill" style="display:none"></span>
-    <button id="loadBtn">载入权重</button>
+    <span class="load-status" id="loadStatus" title="切换 Seed / 拖动 epoch / 点击曲线都会自动载入对应的权重快照，无需手动操作">等待载入…</span>
     <span id="dims" class="chip"></span>
   </div>
 </div>
 
 <main class="panels">
-  <!-- 1) 网络结构图 -->
+  <!-- 0) 多 seed 横向比较 -->
+  <section class="seeds-card">
+    <h2>⓪ 各 seed 横向比较 <span class="seeds-hint" id="seedsHint">—</span></h2>
+    <div class="seed-modes" id="seedModes">
+      <button type="button" data-mode="curve" class="on">📈 效果：准确率曲线</button>
+      <button type="button" data-mode="param">🧬 参数：W<sub>E</sub> 关键频率</button>
+      <span class="seeds-hint" id="seedStatus"></span>
+    </div>
+    <div class="seed-row" id="seedRow"></div>
+    <div class="acc-note" id="seedNote"></div>
+  </section>
+
+  <!-- 1) 选中 seed 的准确率曲线 -->
+  <section class="acc-card">
+    <h2>① 准确率曲线（当前选中的实验 / seed）</h2>
+    <canvas id="cAcc" width="1100" height="260"></canvas>
+    <div class="acc-legend" id="accLegend">—</div>
+    <div class="acc-note">
+      横轴 = epoch，纵轴 = 准确率（训练集 / 测试集）；<span class="sw" style="background:#5aa9ff"></span>训练集，
+      <span class="sw" style="background:#ff7a6b"></span>测试集。
+      绿色虚线 = <b>顿悟点</b>（测试准确率首次 ≥ 95% 的 epoch），金色虚线 = 当前正在查看的 epoch。
+      <b>点击 / 拖动曲线可切换阶段</b>（自动吸附到最近的权重快照），上方「阶段(epoch)」滑块与它联动。
+      曲线上的竖直回落是训练里的 <b>loss spike</b>（个别 epoch 短暂退化，此 seed 在 epoch 16526 出现：训练 86.9% / 测试 84.6%），不是绘图错误。
+    </div>
+  </section>
+
+  <!-- 2) 网络结构图 -->
   <section class="arch-card">
-    <h2>① 网络结构（论文主模型：单层 Transformer 解模加法 a + b mod P）</h2>
-    <svg id="archSvg" viewBox="0 0 1200 620" role="img" aria-label="网络结构示意"></svg>
-    <div class="arch-legend">token(114 种：0…112 与 “=”) × 3 位置 → EMBED(128×3) → ATTENTION(4 头) → MLP(128→512→128，圆圈=结点、线=权重、隐藏层含 ReLU) → UNEMBED → logits(113 类)。本图为结构示意，非按真实比例。</div>
+    <h2>② 网络结构（论文主模型：单层 Transformer 解模加法 a + b mod P）</h2>
+    <svg id="archSvg" viewBox="0 0 1200 620" role="img" aria-label="网络结构：各模块里画的是真实前向算出的输出张量"></svg>
+    <div class="arch-legend">token(114 种：0…112 与 “=”) × 3 位置 → EMBED(输出 3×128) → ATTENTION(4 头，各自经 W_O 后 128 维 → Σ 相加) → MLP(128 → 512 ReLU → 128 输出) → logits(113 类，由 W_U·x 读出)。<b>每个块里画的是「当前样本 × 当前权重」算出来的真实输出张量</b>：每根竖条 = 一个分量，以中线为基准（<span style="color:#ffb020">琥珀向上 = 正</span>，<span style="color:#5aa9ff">天蓝向下 = 负</span>），高度 ∝ (|数值| / 该块最大值)<sup>0.65</sup>（幂次压缩，便于看清小分量）；logits 块条长 ∝ logit，金框 = 真值类。切换 Seed / 拖 epoch / 点「测试」换样本后自动重算。</div>
 
     <div class="test-bar">
       <button id="testBtn" type="button">🧪 测试（前向推理）</button>
@@ -167,53 +222,6 @@
     </div>
   </section>
 
-  <!-- 2) 权重面板 -->
-  <section class="grid2">
-    <div class="panel">
-      <h3>Embedding W<sub>E</sub> <span class="chip">token_embed [114×128]</span></h3>
-      <canvas id="cWE" width="912" height="304"></canvas>
-      <div class="note">行为 token(0…112 与 “=”)，列为残差流维。热图颜色=权重符号与大小。</div>
-    </div>
-    <div class="panel">
-      <h3>W<sub>E</sub> 的傅里叶范数 <span class="chip">在值轴上做 DFT 后的稀疏度</span></h3>
-      <canvas id="cWEf" width="912" height="240"></canvas>
-      <div class="note">顿悟后应集中在少数“关键频率”上（类似论文图 3）。</div>
-    </div>
-    <div class="panel">
-      <h3>神经元-输出映射 W<sub>L</sub>=W<sub>U</sub>·W<sub>out</sub> <span class="chip">[113×512]</span></h3>
-      <canvas id="cWL" width="912" height="240"></canvas>
-      <div class="note">行=输出类别(0…112)，列=MLP 神经元。</div>
-    </div>
-    <div class="panel">
-      <h3>W<sub>L</sub> 的傅里叶范数 <span class="chip">稀疏度信号</span></h3>
-      <canvas id="cWLf" width="912" height="240"></canvas>
-    </div>
-    <div class="panel" style="grid-column: 1 / -1;">
-      <h3>注意力头矩阵 <span class="chip">选择要查看的 head 与矩阵</span>
-        <span class="matrix-picker">
-          <select id="headSel"></select>
-          <select id="matSel">
-            <option value="W_Q">W_Q (Q 投影) [128×32]</option>
-            <option value="W_K">W_K (K 投影) [128×32]</option>
-            <option value="W_V">W_V (V 投影) [128×32]</option>
-            <option value="W_O">W_O (输出投影) [32×128]</option>
-          </select>
-        </span>
-      </h3>
-      <canvas id="cHead" width="912" height="240"></canvas>
-    </div>
-    <div class="panel" style="grid-column: 1 / -1;">
-      <h3>MLP 权重 <span class="chip">Win [512×128]（行=神经元）与 Wout [128×512]（行=残差维）</span></h3>
-      <div style="display:flex; gap:14px; flex-wrap:wrap;">
-        <div><div class="note">W_in</div><canvas id="cWin" width="912" height="180"></canvas></div>
-        <div><div class="note">W_out</div><canvas id="cWout" width="912" height="180"></canvas></div>
-      </div>
-    </div>
-    <div class="panel" style="grid-column: 1 / -1;">
-      <h3>训练曲线 <span class="chip">点击/拖动选择阶段（红色竖线 = 当前查看的 epoch）</span></h3>
-      <canvas id="cCurve" width="1100" height="300"></canvas>
-    </div>
-  </section>
 </main>
 
 <footer class="site">

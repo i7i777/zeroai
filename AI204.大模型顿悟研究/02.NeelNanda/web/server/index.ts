@@ -8,11 +8,11 @@
  *   node index.ts
  *
  * 提供的能力：
- *   GET /             -> public/index.html（首页）
- *   GET /paper-zh.html-> public/paper-zh.html（论文中文翻译页）
- *   GET /paper.pdf    -> docs/ 下的原始英文 PDF
+ *   GET /             -> public/index.html（首页：论文英文原文的本地完整版）
+ *   GET /model.html   -> public/model.html（模型可视化页）
+ *   GET /paper.pdf    -> docs/ 下的原始英文 PDF（无页面链接，直接访问时可用）
  *   GET /api/meta     -> JSON 元信息（论文信息、Node 版本、运行时长…）
- *   其余路径          -> public/ 下的静态资源（css / js / images）
+ *   其余路径          -> public/ 下的静态资源（css / js / images / assets）
  */
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile, readdir, stat } from "node:fs/promises";
@@ -107,7 +107,6 @@ async function findFirstPdf(): Promise<string | null> {
 async function handleApiMeta(res: ServerResponse): Promise<void> {
   const pdfPath = await findFirstPdf();
   const info = await (pdfPath ? stat(pdfPath) : null);
-  const html = await readIfExists(join(PUBLIC_DIR, "paper-zh.html"));
   sendJson(res, 200, {
     ok: true,
     server: {
@@ -118,7 +117,6 @@ async function handleApiMeta(res: ServerResponse): Promise<void> {
     paper: {
       file: pdfPath ? pdfPath.split(/[\\/]/).pop() : null,
       bytes: info?.size ?? 0,
-      chineseTranslationAvailable: html !== null,
       originalTitle: "Progress measures for grokking via mechanistic interpretability",
       originalTitleZh: "通过机械可解释性度量「顿悟」现象(grokking)的进展(progress measures)",
     },

@@ -33,106 +33,6 @@
     return { header, mats };
   }
 
-  // ---------------- 颜色 ----------------
-  // 发散色：蓝-白-红（用于权重热图，0 为白）
-  function divergingRGB(t) {
-    // t in [0,1]
-    const stops = [[33, 102, 172], [255, 255, 255], [178, 24, 43]];
-    const seg = t < 0.5 ? 0 : 1;
-    const local = t < 0.5 ? t * 2 : (t - 0.5) * 2;
-    const a = stops[seg], b = stops[seg + 1];
-    return [
-      Math.round(a[0] + (b[0] - a[0]) * local),
-      Math.round(a[1] + (b[1] - a[1]) * local),
-      Math.round(a[2] + (b[2] - a[2]) * local),
-    ];
-  }
-  // 单色深→亮（用于范数/谱）
-  function monoRGB(t) {
-    const c = Math.round(20 + 235 * Math.pow(t, 0.55));
-    return [c, Math.round(40 + 160 * t), Math.round(30 + 120 * t)];
-  }
-
-  /** 在 <canvas> 上画矩阵热图
-   * @param shape [srcRows, srcCols]
-   * @param get(i) 返回按行优先的第 i 个源值
-   * @param transpose true 表示显示时把源矩阵转置（用源列作 y、源行作 x）
-   */
-  function renderHeat(canvas, shape, get, { transpose = false, symmetric = true, norm = false } = {}) {
-    const srcRows = shape[0], srcCols = shape[1];
-    const rowsD = transpose ? srcCols : srcRows;   // 显示高度方向像素数
-    const colsD = transpose ? srcRows : srcCols;   // 显示宽度方向像素数
-    const maxDimPx = 320, maxWidePx = 820;
-    const px = Math.max(1, Math.min(
-      Math.floor(maxDimPx / rowsD),
-      Math.floor(maxWidePx / colsD),
-      4
-    ));
-    const W = colsD * px, H = rowsD * px;
-    canvas.width = W; canvas.height = H;
-    canvas.style.maxWidth = "100%"; canvas.style.height = "auto";
-
-    // 数值范围（采样）
-    let lo = Infinity, hi = -Infinity;
-    const nSrc = srcRows * srcCols;
-    const step = Math.max(1, Math.floor(nSrc / 60000));
-    for (let i = 0; i < nSrc; i += step) {
-      const v = get(i);
-      if (v < lo) lo = v;
-      if (v > hi) hi = v;
-    }
-    if (symmetric) { const a = Math.max(Math.abs(lo), Math.abs(hi)); lo = -a; hi = a; }
-    if (lo === hi) hi = lo + 1e-9;
-
-    const img = canvas.getContext("2d").createImageData(W, H);
-    const d = img.data;
-    for (let y = 0; y < H; y++) {
-      const iy = Math.floor(y / px);           // 显示行
-      for (let x = 0; x < W; x++) {
-        const ix = Math.floor(x / px);         // 显示列
-        // 源位置
-        const sr = transpose ? ix : iy;
-        const sc = transpose ? iy : ix;
-        const v = get(sr * srcCols + sc);
-        const t = Math.min(1, Math.max(0, (v - lo) / (hi - lo)));
-        const rgb = norm ? monoRGB(t) : divergingRGB(t);
-        const o = (y * W + x) * 4;
-        d[o] = rgb[0]; d[o + 1] = rgb[1]; d[o + 2] = rgb[2]; d[o + 3] = 255;
-      }
-    }
-    canvas.getContext("2d").putImageData(img, 0, 0);
-  }
-
-  /** 在 <canvas> 上画一维柱状图（傅里叶范数等） */
-  function renderBars(canvas, values, labels) {
-    const W = 920, H = 240;
-    canvas.width = W; canvas.height = H;
-    const ctx = canvas.getContext("2d");
-    ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
-    const n = values.length;
-    const pad = 4, baseY = H - 24, topY = 18;
-    const maxV = Math.max(...values, 1e-12);
-    const bw = (W - pad * 2) / n;
-    ctx.fillStyle = "steelblue";
-    for (let i = 0; i < n; i++) {
-      const h = ((H - topY - (H - baseY)) * values[i]) / maxV;
-      ctx.fillRect(pad + i * bw, baseY - h, Math.max(1, bw - 1), h);
-    }
-    ctx.fillStyle = "#57606a";
-    ctx.font = "11px sans-serif";
-    if (labels && labels.length === n) {
-      const every = Math.max(1, Math.ceil(n / 14));
-      ctx.textAlign = "center";
-      for (let i = 0; i < n; i += every) {
-        ctx.fillText(String(labels[i]), pad + i * bw + bw / 2, H - 6);
-      }
-    }
-    ctx.textAlign = "left";
-    ctx.fillStyle = "#888";
-    ctx.fillText(`0  ~  ${maxV.toExponential(2)}`, 6, topY - 2);
-  }
-
   // ---------------- 傅里叶（朴素实 DFT） ----------------
   function buildTwiddles(p) {
     // tw[k][n] = exp(-2πi k n / p)
@@ -220,6 +120,9 @@
   const state = {
     index: null,      // /viz-data/index.json
     run: null, seed: null,
+    snapCache: new Map(),     // (run|seed|epoch) → mats（多 seed 参数对比用，带缓存）
+    seedMode: "curve",        // ⓪ 卡片的视角：curve = 效果，param = 参数（W_E 频率谱）
+    paramGen: 0,              // 参数视图的“代”号，用来丢弃过期的异步结果
     idx: null,        // 当前 (run,seed) 的 index（config/curve/epochs）
     epochs: [],
     cfg: null,
@@ -230,7 +133,7 @@
     testKey: null,
     lastTest: null,    // 最近一次测试的 {a,b,c,src}（切阶段后用它按新权重重算）
     gen: 0,            // 阶段选择序号，用于丢弃过期的异步刷新
-    freqSrc: null,     // 当前打开的频率视图：embed/attn/mlp/unembed/logits
+    freqSrc: null,     // 当前打开的频率视图：embed/attn/mlp/logits
     freqPick: {},      // 每级自动挑中的“最正弦”维度/类别（换权重后清空）
     archStage: null,   // 结构图上高亮的级（与按钮/面板同步）
   };
@@ -250,15 +153,14 @@
     // ---- 横向等距布局：5 个部件，块间空隙固定 ----
     const GAP = 64;
     const X0 = 20;
-    const wIn = 210, wEmb = 140, wAtt = 270, wMlp = 330, wUn = 130, wLog = 76;
+    const wIn = 210, wEmb = 140, wAtt = 270, wMlp = 330, wLog = 76;
     const inX = X0;
     const embX = inX + wIn + GAP;
     const attX = embX + wEmb + GAP;
     const mlpX = attX + wAtt + GAP;
-    const unX = mlpX + wMlp + GAP;
-    const logX = unX + wUn + GAP;
+    const logX = mlpX + wMlp + GAP;        // MLP 之后就是读出的 logits（UNEMBED 块已删）
     const inCx = inX + wIn / 2, embCx = embX + wEmb / 2, attCx = attX + wAtt / 2,
-          mlpCx = mlpX + wMlp / 2, unCx = unX + wUn / 2, logCx = logX + wLog / 2;
+          mlpCx = mlpX + wMlp / 2, logCx = logX + wLog / 2;
     const AY = 310;                        // 箭头/数据流所在的水平线
     const W = logX + wLog + 40;            // 视口总宽（自动适配）
 
@@ -276,11 +178,11 @@
     const lbl = (x, y, txt, size = 12, fill = "#9aa3b2") =>
       `<text x="${x}" y="${y}" fill="${fill}" font-size="${size}" text-anchor="middle" font-family="sans-serif">${txt}</text>`;
 
-    // —— 输入 / EMBED / ATTENTION / UNEMBED 整体下移（垂直居中的“流水线”上半区）——
+    // —— 输入 / EMBED / ATTENTION / MLP 整体下移（垂直居中的“流水线”上半区）——
     s += `<g transform="translate(0,${VS})">`;
 
     // 箭头（每段等长 GAP）
-    const arrows = [[inX + wIn, embX], [embX + wEmb, attX], [attX + wAtt, mlpX], [mlpX + wMlp, unX], [unX + wUn, logX]];
+    const arrows = [[inX + wIn, embX], [embX + wEmb, attX], [attX + wAtt, mlpX], [mlpX + wMlp, logX]];
     for (const [x1, x2] of arrows) {
       s += `<line x1="${x1}" y1="${AY}" x2="${x2}" y2="${AY}" stroke="#8b2f2f" stroke-width="2.4" marker-end="url(#arr)"/>`;
     }
@@ -296,6 +198,18 @@
       hasS ? `位置2 · b=${bVal}  ●测试` : `位置2 · b=${bVal}`,
       `位置3 · '='`,
     ];
+    // —— 真实前向：四个方面块里画的是“当前样本 × 当前权重”算出来的输出张量 ——
+    const T = archTensors(aVal, bVal);
+    const embVmax = T ? vmaxOf(T.emb) : 1;                              // 条带缩放基准（各块各自归一）
+    const attVmax = T ? vmaxOf([...T.heads, T.attn]) : 1;
+    const logMax = T ? Math.max(...T.logits) : 1;
+    const logMin = T ? Math.min(...T.logits) : 0;
+    const predIdx = T ? T.logits.indexOf(logMax) : -1;
+    /** 权重还没载入时块内的占位 */
+    const pending = (x, y, w, hh) =>
+      `<rect x="${x}" y="${y}" width="${w}" height="${hh}" rx="5" fill="#1b2130" stroke="#2c3446"/>` +
+      `<text x="${x + w / 2}" y="${y + hh / 2 + 4}" fill="#7f8ba3" font-size="10" text-anchor="middle" font-family="sans-serif">权重载入中…</text>`;
+
     const padX = 10, cw = 48;
     const gapCol = (wIn - 2 * padX - 3 * cw) / 2;
     const IO_TOP = 152, IO_BOT = 450;
@@ -322,189 +236,135 @@
     s += lbl(inX + wIn / 2, IO_BOT + 42, inCap, 10, hasS ? "#ffd57a" : "#9aa3b2");
     s += `</g>`;
 
-    // 2) EMBED：3 个 one-hot（a / b / =）各查一行 W_E，得到 3 个 d 维向量
+    // 2) EMBED：框里画的是「3 个 token 各自查表 + 位置编码」以后的输出张量（3×d）
     //    每个向量单独成组（data-vec），便于高亮到「某一个 token 的嵌入向量」而不是整块 EMBED
     s += `<g data-stage="embed"><rect x="${embX}" y="150" width="${wEmb}" height="320" rx="10" fill="url(#bx)" stroke="#c0843c"/>`;
     s += lbl(embCx, 140, "EMBED", 13, "#c9a15c");
-    s += `<text x="${embCx}" y="180" fill="#dfe3ea" font-size="14" text-anchor="middle" font-family="monospace">W_E</text>`;
+    s += lbl(embCx, 182, `输出张量 3×${d}`, 10, "#9aa3b2");
+    s += lbl(embCx, 196, `= W_E[token] + pos`, 9, "#7f8ba3");
     const embVecs = [
-      { key: "a", val: tokVals[0], col: "#ffd57a" },   // 位置1 的 token a
-      { key: "b", val: tokVals[1], col: "#9db4d0" },   // 位置2 的 token b
-      { key: "=", val: tokVals[2], col: "#9db4d0" },   // 位置3 的 '='
+      { key: "a", val: tokVals[0], col: "#ffd57a", tag: "位置1" },   // 位置1 的 token a
+      { key: "b", val: tokVals[1], col: "#9db4d0", tag: "位置2" },   // 位置2 的 token b
+      { key: "=", val: tokVals[2], col: "#9db4d0", tag: "位置3" },   // 位置3 的 '='
     ];
-    const vX = embX + 18, vW = wEmb - 36, vH = 56, vTop = 200, vGap = 22, nBar = 12;
+    const vX = embX + 16, vW = wEmb - 32, vH = 62, vTop = 208, vGap = 20;
     for (let i = 0; i < embVecs.length; i++) {
       const v = embVecs[i], vy = vTop + i * (vH + vGap);
       s += `<g data-vec="${v.key}">`;
       s += `<rect x="${vX}" y="${vy}" width="${vW}" height="${vH}" rx="7" fill="#2a3145" stroke="#6b7385"/>`;
-      const bw = (vW - 16) / nBar;
-      for (let j = 0; j < nBar; j++) {                  // 小竖条 = 该向量 d 个分量的示意
-        const op = (0.22 + 0.68 * Math.abs(Math.sin(i * 2.1 + j * 1.7))).toFixed(2);
-        s += `<rect x="${(vX + 8 + j * bw).toFixed(1)}" y="${vy + 9}" width="${(bw - 2).toFixed(1)}" height="20" rx="1" fill="${v.col}" fill-opacity="${op}"/>`;
-      }
-      // 两行文字：名字左对齐、token 值右对齐，避免同一行挤在一起
-      s += `<text class="vecName" x="${vX + 8}" y="${vy + vH - 11}" fill="${v.col}" font-size="10.5" font-family="monospace">W_E[${v.key}]</text>`;
-      s += `<text x="${vX + vW - 8}" y="${vy + vH - 11}" fill="#9aa3b2" font-size="9.5" text-anchor="end" font-family="monospace">token ${v.val}</text>`;
+      s += T ? strip(T.emb[i], vX + 8, vy + 8, vW - 16, 40, embVmax)
+             : pending(vX + 8, vy + 8, vW - 16, 40);
+      // 两行文字：名字左对齐、位置右对齐，避免同一行挤在一起
+      s += `<text class="vecName" x="${vX + 8}" y="${vy + vH - 9}" fill="${v.col}" font-size="9.5" font-family="monospace">W_E[${v.val}] + p${i + 1}</text>`;
+      s += `<text x="${vX + vW - 8}" y="${vy + vH - 9}" fill="#9aa3b2" font-size="9" text-anchor="end" font-family="monospace">${d} 维</text>`;
       s += `</g>`;
     }
-    s += lbl(embCx, 452, `one-hot(${NTOK}) → ${d} 维`, 10.5);
+    s += lbl(embCx, 452, `条带 = ${d} 个分量`, 10.5);
     s += `</g>`;
 
     // 3) ATTENTION（4 头）
-    //    头内部：Q/K/V → softmax(QKᵀ/√d)·V → out；4 个头的 out 再由右侧汇聚线收到 Σ 框。
-    //    最下面那个「Σ 4 头输出相加 → W_O 投影」才是频率视图分析的那一层（位置「=」的残差流增量）。
+    //    框里画的是每个头「softmax(QKᵀ/√d)·V → W_O」以后的输出张量（各 d 维），
+    //    以及 4 个头相加的结果 —— 那才是频率视图分析的那一层（位置「=」的残差流增量）。
     s += `<g data-stage="attn"><rect x="${attX}" y="70" width="${wAtt}" height="480" rx="12" fill="#1f2530" stroke="#7a5bb0"/>`;
     s += lbl(attCx, 55, `ATTENTION（${h} 头）`, 14, "#b18be0");
     const L = attX + 22;
     const HW = wAtt - 44;
     const headH = 92, top0 = 88, gapV = 8;
-    const rail = L + HW + 12;                 // 右侧汇集线：把 4 个头的 out 收拢到 Σ 框
-    const sumY = 492, sumH = 44;
+    const rail = L + HW + 10;                 // 右侧汇集线：把 4 个头的输出收拢到 Σ 框
+    const sumY = 486, sumH = 50;
     const taps = [];
     for (let i = 0; i < h; i++) {
       const yy = top0 + i * (headH + gapV);
       s += `<rect x="${L}" y="${yy}" width="${HW}" height="${headH}" rx="8" fill="#2a3040" stroke="#5b6172"/>`;
-      s += `<text x="${L + 14}" y="${yy + 18}" fill="#9aa3b2" font-size="10">head ${i}</text>`;
-      const qx = L + 40, kx = L + 98, vx = L + 156, midY = yy + 44;
-      s += `<circle cx="${qx}" cy="${midY}" r="10" fill="#3f4763" stroke="#8a90a3"/>
-            <circle cx="${kx}" cy="${midY}" r="10" fill="#3f4763" stroke="#8a90a3"/>
-            <circle cx="${vx}" cy="${midY}" r="10" fill="#3f4763" stroke="#8a90a3"/>`;
-      s += `<text x="${qx}" y="${midY + 5}" fill="#dfe3ea" font-size="11" text-anchor="middle">Q</text>
-            <text x="${kx}" y="${midY + 5}" fill="#dfe3ea" font-size="11" text-anchor="middle">K</text>
-            <text x="${vx}" y="${midY + 5}" fill="#dfe3ea" font-size="11" text-anchor="middle">V</text>`;
-      const mx = L + HW / 2, oy = midY + 24;
-      s += `<line x1="${kx}" y1="${midY}" x2="${mx}" y2="${oy}" stroke="#b18be0" stroke-width="1.4"/>
-            <line x1="${vx}" y1="${midY}" x2="${mx + 20}" y2="${oy}" stroke="#b18be0" stroke-width="1.4"/>`;
-      s += `<circle cx="${mx}" cy="${oy}" r="10" fill="none" stroke="#e0c25a" stroke-width="1.6"/>`;
-      s += `<text x="${mx}" y="${oy + 5}" fill="#e0c25a" font-size="12" text-anchor="middle">⊗</text>`;
-      s += `<text x="${L + HW - 8}" y="${yy + 18}" fill="#9aa3b2" font-size="9" text-anchor="end">softmax(QKᵀ/√d)</text>`;
-      s += `<rect x="${L + HW - 40}" y="${oy + 6}" width="34" height="15" rx="4" fill="#3f4763"/>
-            <text x="${L + HW - 23}" y="${oy + 17}" fill="#dfe3ea" font-size="9" text-anchor="middle">out</text>`;
-      taps.push(oy + 13);                     // 该头 out 框的纵向中心
+      s += `<text x="${L + 12}" y="${yy + 16}" fill="#9aa3b2" font-size="10">head ${i}</text>`;
+      s += `<text x="${L + HW - 12}" y="${yy + 16}" fill="#7f8ba3" font-size="9" text-anchor="end">W_O·(attn·V) 输出 · ${d} 维</text>`;
+      s += T ? strip(T.heads[i], L + 12, yy + 24, HW - 24, 54, attVmax)
+             : pending(L + 12, yy + 24, HW - 24, 54);
+      taps.push(yy + 24 + 27);                // 该头输出条带的纵向中心
     }
-    // 汇集线：每个头的 out → 右侧竖线 → 底部 Σ 框
+    // 汇集线：每个头的输出 → 右侧竖线 → 底部 Σ 框
     for (const ty of taps) {
-      s += `<line x1="${L + HW - 6}" y1="${ty}" x2="${rail}" y2="${ty}" stroke="#c3a1ee" stroke-width="1.4"/>`;
+      s += `<line x1="${L + HW}" y1="${ty}" x2="${rail}" y2="${ty}" stroke="#c3a1ee" stroke-width="1.4"/>`;
     }
     s += `<line x1="${rail}" y1="${taps[0]}" x2="${rail}" y2="${sumY + sumH / 2}" stroke="#c3a1ee" stroke-width="1.4"/>`;
     s += `<line x1="${rail}" y1="${sumY + sumH / 2}" x2="${L + HW}" y2="${sumY + sumH / 2}" stroke="#c3a1ee" stroke-width="1.6" marker-end="url(#arrL)"/>`;
     // Σ 子层：频率视图（🎯 ATTENTION 频率）分析的就是这一层
     s += `<g data-part="attnSum">`;
     s += `<rect x="${L}" y="${sumY}" width="${HW}" height="${sumH}" rx="8" fill="#2a3040" stroke="#8a90a3"/>`;
-    s += `<text x="${L + 14}" y="${sumY + 19}" fill="#e0c25a" font-size="13">Σ</text>`;
-    s += `<text class="partName" x="${L + 32}" y="${sumY + 19}" fill="#dfe3ea" font-size="11">4 头输出相加 → W_O 投影</text>`;
-    s += `<text x="${L + 14}" y="${sumY + 35}" fill="#9aa3b2" font-size="9.5">残差流增量（位置「=」）· ${d} 维</text>`;
+    s += `<text class="partName" x="${L + 12}" y="${sumY + 15}" fill="#e0c25a" font-size="10.5">Σ 4 头输出相加 → W_O 投影（${d} 维，位置「=」）</text>`;
+    s += T ? strip(T.attn, L + 12, sumY + 24, HW - 24, 22, attVmax)
+           : pending(L + 12, sumY + 26, HW - 24, 20);
     s += `</g>`;
-    s += lbl(attCx, 580, "每个头：softmax(QKᵀ/√d_head)·V（d_head=" + (cfg ? cfg.d_head : 32) + "）；4 头输出相加后由 W_O 投影回 " + d + " 维", 10.5);
+    s += lbl(attCx, 580, "每个头：softmax(QKᵀ/√d_head)·V（d_head=" + (cfg ? cfg.d_head : 32) + "）；条带 = 该头经 W_O 之后的输出张量", 10.5);
     s += `</g>`;          // 关闭 ATTENTION 分组
     s += `</g>`;          // 关闭 translate（MLP 用绝对坐标、占满全高，下面单独画）
 
-    // 4) MLP —— 圆圈=结点、线=权重；输入/隐藏/输出均按“单列(1D)”排布，结点数真实（128 / 512 / 128）
+    // 4) MLP —— 框里画的是三层各自的输出张量（128 输入 → 512 ReLU 隐层 → 128 输出）
     //    boxY=70 / boxH=480：与上方 ATTENTION 完全等高、同顶（70→550）
     {
       const boxY = 70, boxH = 480;
       s += `<g data-stage="mlp"><rect x="${mlpX}" y="${boxY}" width="${wMlp}" height="${boxH}" rx="12" fill="url(#bx)" stroke="#2e8b66"/>`;
       s += lbl(mlpCx, boxY - 15, "MLP · 单隐层全连接", 13, "#57c08a");   // 标题在框上方，与 ATTENTION 标题同线
-      s += lbl(mlpCx, boxY + 18, `${d} → ${m} → ${d}（+ReLU）`, 10.5);
+      s += lbl(mlpCx, boxY + 18, `${d} → ${m} → ${d}（+ReLU）· 各层输出张量`, 10.5);
+      const sx = mlpX + 18, sw = wMlp - 36;
 
-      // 三层结点各为一整列(1D)：x 固定，y 在 [yTop, yBot] 上等距（480 高度内 512 偏密，呈连续竖条）
-      const xIn = mlpX + 52, xHid = mlpX + 165, xOut = mlpX + 278;
-      const yTop = boxY + 74, yBot = boxY + boxH - 64;
-      const col = (n) => {
-        const st = (yBot - yTop) / (n - 1);
-        return Array.from({ length: n }, (_, i) => yTop + i * st);
-      };
-      const yIn = col(d), yHid = col(m), yOut = col(d);
-      const dotCol = (x, ys, r, fill, stroke) =>
-        ys.map((y) => `<circle cx="${x}" cy="${y.toFixed(1)}" r="${r}" fill="${fill}" stroke="${stroke}" stroke-width="0.4"/>`).join("");
-
-      // 权重=线：相邻单列之间按比例采样连线（示意“全连接”），先画线让结点盖在上面
-      const fan = (xa, ya, xb, yb, color) => {
-        const a0 = ya[0], a1 = ya[ya.length - 1], b0 = yb[0], b1 = yb[yb.length - 1];
-        let t = "";
-        for (let i = 0; i < 30; i++) {
-          const tt = i / 29;
-          t += `<line x1="${xa}" y1="${(a0 + tt * (a1 - a0)).toFixed(1)}"
-                       x2="${xb}" y2="${(b0 + tt * (b1 - b0)).toFixed(1)}"
-                       stroke="${color}" stroke-width="0.6" stroke-opacity="0.22"/>`;
-        }
-        return t;
-      };
-      // 两个权重层各画一个虚框（mlpIn / mlpOutW）：只是标出层次与尺寸，不作为点亮目标
-      // （「MLP 频率」画的是 MLP 的输出激活，不是权重，见下面的 mlpOut）
-      // 尺寸按 PyTorch 的存法标注：nn.Linear(in, out).weight.shape = [out, in]（行=输出维）
-      const fTop = yTop - 40, fBot = yBot + 8;
-      for (const fr of [
-        { part: "mlpIn",   x1: xIn + 6,  x2: xHid - 6, title: `W_in ${m}×${d}`,  dir: `in ${d} → out ${m}`,  col: "#8fd0ff" },
-        { part: "mlpOutW", x1: xHid + 6, x2: xOut - 6, title: `W_out ${d}×${m}`, dir: `in ${m} → out ${d}`, col: "#a7e0b0" },
-      ]) {
-        const cx = (fr.x1 + fr.x2) / 2;
-        s += `<g data-part="${fr.part}">`;
-        s += `<rect x="${fr.x1}" y="${fTop}" width="${fr.x2 - fr.x1}" height="${fBot - fTop}" rx="8" fill="none" stroke="#3d4a63" stroke-dasharray="5 5"/>`;
-        s += `<text class="partName" x="${cx}" y="${fTop + 17}" fill="${fr.col}" font-size="10" text-anchor="middle" font-family="sans-serif">${fr.title}</text>`;
-        s += `<text x="${cx}" y="${fTop + 30}" fill="#7f8ba3" font-size="8.5" text-anchor="middle" font-family="sans-serif">${fr.dir}</text>`;
-        s += `</g>`;
-      }
-
-      s += `<g stroke-linecap="round">${fan(xIn + 10, yIn, xHid - 10, yHid, "#8fd0ff")}${fan(xHid + 10, yHid, xOut - 10, yOut, "#a7e0b0")}</g>`;
-
-      s += dotCol(xIn, yIn, 1.3, "#3f4763", "#9db4d0");
-      s += dotCol(xHid, yHid, 0.6, "#1e7d46", "#8ae3a8");
-      // MLP 的输出向量（= W_out·ReLU(…) + b_out，加回残差流的 128 维增量）单独成组：
-      // 「MLP 频率」画的就是这一列里的某一维，所以点亮的是它、而不是权重框
-      s += `<g data-part="mlpOut">`;
-      s += `<rect x="${xOut - 8}" y="${yTop - 10}" width="16" height="${(yBot - yTop + 20).toFixed(1)}" rx="8" fill="none" stroke="#3d4a63" stroke-dasharray="5 5"/>`;
-      s += `<g class="partHl">${dotCol(xOut, yOut, 1.3, "#4a4f78", "#c9a15c")}</g>`;
+      // ① 输入：残差流（位置「=」）；三条条带各自归一，标签里给出实际峰值
+      const pIn = T ? peakOf(T.resid2) : 0, pHid = T ? peakOf(T.hid) : 0, pOut = T ? peakOf(T.mlpOut) : 0;
+      const pk = (v) => `max|·| = ${v.toFixed(2)}`;
+      s += `<g data-part="mlpIn">`;
+      s += `<rect x="${sx}" y="126" width="${sw}" height="66" rx="6" fill="none" stroke="#3d4a63" stroke-dasharray="5 5"/>`;
+      s += `<text class="partName" x="${sx + 9}" y="140" fill="#8fd0ff" font-size="10">输入 resid2（${d} 维 · 位置「=」）</text>`;
+      if (T) s += `<text x="${sx + sw - 9}" y="140" fill="#7f8ba3" font-size="9" text-anchor="end" font-family="monospace">${pk(pIn)}</text>`;
+      s += T ? strip(T.resid2, sx + 10, 148, sw - 20, 36, pIn || 1) : pending(sx + 10, 148, sw - 20, 36);
       s += `</g>`;
-      s += lbl(xIn, yBot + 22, `${d} 输入`, 10.5, "#dfe3ea");
-      s += lbl(xHid, yBot + 22, `${m} 神经元 · ReLU`, 10.5, "#dfe3ea");
-      s += lbl(xOut, yBot + 22, `${d} 输出`, 10.5, "#dfe3ea");
-      s += lbl(mlpCx, boxY + boxH - 14, "（尺寸按 PyTorch 存法 = [输出维 × 输入维]；512 偏密，连线为部分示意）", 8.5);
+
+      // ② 隐层：ReLU 之后（512 维，偏密 → 连续竖条）
+      s += `<rect x="${sx}" y="222" width="${sw}" height="150" rx="6" fill="none" stroke="#3d4a63" stroke-dasharray="5 5"/>`;
+      s += `<text x="${sx + 9}" y="236" fill="#8ae3a8" font-size="10">隐层 ReLU 激活（${m} 维）</text>`;
+      if (T) s += `<text x="${sx + sw - 9}" y="236" fill="#7f8ba3" font-size="9" text-anchor="end" font-family="monospace">${pk(pHid)}</text>`;
+      s += T ? strip(T.hid, sx + 10, 244, sw - 20, 118, pHid || 1) : pending(sx + 10, 244, sw - 20, 118);
+
+      // ③ 输出：W_out·ReLU(…) + b_out —— 加回残差流的 128 维增量
+      //    「MLP 频率」分析的就是这一层，所以点亮的是它
+      s += `<g data-part="mlpOut">`;
+      s += `<rect x="${sx}" y="392" width="${sw}" height="66" rx="6" fill="none" stroke="#3d4a63" stroke-dasharray="5 5"/>`;
+      s += `<text class="partName" x="${sx + 9}" y="406" fill="#c9a15c" font-size="10">输出 = W_out·ReLU(…) + b_out（${d} 维）</text>`;
+      if (T) s += `<text x="${sx + sw - 9}" y="406" fill="#7f8ba3" font-size="9" text-anchor="end" font-family="monospace">${pk(pOut)}</text>`;
+      s += T ? strip(T.mlpOut, sx + 10, 414, sw - 20, 36, pOut || 1) : pending(sx + 10, 414, sw - 20, 36);
+      s += `</g>`;
+
+      s += lbl(mlpCx, boxY + boxH - 30, "每层条带各自归一（幅度对比看右侧 max|·|）；琥珀 = 正，天蓝 = 负", 8.5);
+      s += lbl(mlpCx, boxY + boxH - 14, `尺寸按 PyTorch 存法 = [输出维 × 输入维]：W_in ${m}×${d}，W_out ${d}×${m}`, 8.5);
       s += `</g>`;
     }
-    // 重新平移：画 UNEMBED 等
+    // 重新平移：画读出端
     s += `<g transform="translate(0,${VS})">`;
-    // 5) 读出端：把 UNEMBED 的权重矩阵 W_U 与它读出的 logits 向量并排画，行高对齐
-    //    第 r 行 W_U[r] 与第 r 格 logit 是同一个输出类 —— 这样两个面板的区别一眼可见
+    // 5) 读出端：直接把 113 个类的 logit 画出来（未单独画 UNEMBED 权重块：
+    //    这块权重的作用就是把残差流读出成 logits，已在 📊 LOGITS 频率面板里体现）
     const RD_TOP = 150, RD_H = 312, RD_ROW = RD_H / p;
     const rdClass = (hasS && sample.c != null) ? sample.c : (aVal + bVal) % p;   // 真值类（金 = 真值）
-    // 5a) UNEMBED：W_U = [113 类 × 128 维]，一行 = 一个类的读出向量（**权重**，静态）
-    //     （权重视图已下线：UNEMBED 的“输出”就是 logits，由 📊 LOGITS 频率面板负责）
-    s += `<g data-stage="unembed"><rect x="${unX}" y="120" width="${wUn}" height="380" rx="8" fill="url(#bx)" stroke="#c0843c"/>`;
-    s += lbl(unCx, 100, "UNEMBED", 11, "#c9a15c");
-    s += lbl(unCx, 138, `W_U ${p} 类 × ${d} 维`, 9, "#9aa3b2");
-    {
-      const gx = unX + 8, gw = wUn - 50;
-      for (let r = 0; r < p; r++) {                 // 一行 = 一个输出类的读出向量
-        s += `<rect x="${gx}" y="${(RD_TOP + r * RD_ROW).toFixed(1)}" width="${gw}" height="${Math.max(1, RD_ROW - 0.6).toFixed(2)}" fill="#273149"/>`;
-      }
-      for (let i = 1; i < 4; i++) {                 // 细竖线：示意 128 个残差维（此处压成几列）
-        const vx = (gx + (gw * i) / 4).toFixed(1);
-        s += `<line x1="${vx}" y1="${RD_TOP}" x2="${vx}" y2="${RD_TOP + RD_H}" stroke="#3a4257" stroke-width="0.6"/>`;
-      }
-      const hatY = RD_TOP + rdClass * RD_ROW;       // 金 = 真值类：它在 W_U 里是哪一行
-      s += `<rect x="${gx - 3}" y="${(hatY - 1).toFixed(1)}" width="${gw + 6}" height="${(RD_ROW + 2).toFixed(1)}" rx="1.5" fill="#ffd57a" stroke="#ffd57a" stroke-width="0.6"/>`;
-      s += `<text x="${gx + gw + 6}" y="${(hatY + 3.4).toFixed(1)}" fill="#ffd57a" font-size="9" font-family="monospace">类 ${rdClass}</text>`;
-      s += lbl(unCx, 484, "每行 = 一个输出类的读出向量", 8, "#9aa3b2");
-    }
-    s += `</g>`;       // 关闭 UNEMBED 分组
-    // 5b) logits：UNEMBED 读出的结果向量本身 = 113 个类的 logit（**激活**，取决于输入 a、b）
-    //     「LOGITS 频率」画的是所选输出类那一格随 b 的变化，所以点亮的是那一格
     s += `<g data-stage="logits"><rect x="${logX}" y="120" width="${wLog}" height="380" rx="8" fill="url(#bx)" stroke="#c0843c"/>`;
     s += lbl(logCx, 100, "logits", 11, "#c9a15c");
-    s += lbl(logCx, 138, `${p} 类`, 9, "#9aa3b2");
+    s += lbl(logCx, 138, T ? `W_U·x → ${p} 类` : `W_U·x → ${p} 类`, 8, "#9aa3b2");
     {
       const gx = logX + 10, gw = wLog - 40;
-      for (let r = 0; r < p; r++) {                 // 一格 = 一个输出类的 logit（行高与 W_U 对齐）
+      const span = Math.max(1e-9, logMax - logMin);
+      for (let r = 0; r < p; r++) {                 // 一格 = 一个输出类的 logit（条长 ∝ 数值大小）
         const cy = (RD_TOP + r * RD_ROW).toFixed(1);
+        const rh = Math.max(1, RD_ROW - 0.6).toFixed(2);
         s += `<g data-part="logitsCell" data-idx="${r}">`;
-        s += `<rect x="${gx}" y="${cy}" width="${gw}" height="${Math.max(1, RD_ROW - 0.6).toFixed(2)}" fill="#273149"/>`;
+        s += `<rect x="${gx}" y="${cy}" width="${gw}" height="${rh}" fill="#273149"/>`;
+        if (T) {
+          const rel = (T.logits[r] - logMin) / span;            // 0…1，本样本自己的相对大小
+          const col = r === predIdx ? "#7ce0a8" : (rel > 0.72 ? "#8fe3f2" : rel > 0.42 ? "#4f9cbf" : "#33607a");
+          s += `<rect x="${gx}" y="${cy}" width="${Math.max(0.8, rel * gw).toFixed(2)}" height="${rh}" fill="${col}"/>`;
+        }
         s += `<text x="${gx + gw + 5}" y="${(RD_TOP + r * RD_ROW + RD_ROW - 0.4).toFixed(1)}" fill="#8fe3f2" font-size="8" font-family="monospace">${r}</text>`;
         s += `</g>`;
       }
-      const tY = RD_TOP + rdClass * RD_ROW;         // 同一个真值类，在这边是哪一格
+      const tY = RD_TOP + rdClass * RD_ROW;         // 真值类在第几格
       s += `<rect x="${gx - 3}" y="${(tY - 1).toFixed(1)}" width="${gw + 6}" height="${(RD_ROW + 2).toFixed(1)}" rx="1.5" fill="none" stroke="#ffd57a" stroke-width="0.8"/>`;
-      s += lbl(logCx, 484, "每格 = 一类的 logit", 7.5, "#9aa3b2");
+      s += lbl(logCx, 484, "条长 ∝ logit（金框 = 真值类）", 7.5, "#9aa3b2");
     }
     s += `</g>`;       // 关闭 logits 分组
     s += `</g>`;       // 关闭 translate 分组
@@ -514,7 +374,6 @@
       const ok = !!sample.correct;
       s += `<text x="${logCx}" y="566" fill="${ok ? '#6ee7a0' : '#ff8a80'}" font-size="12.5" text-anchor="middle" font-family="sans-serif">ĉ = ${sample.pred}${ok ? " ✓" : " ✗"}</text>`;
     }
-
     svg.innerHTML = s;
     svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
     highlightArch(state.archStage || null);   // 重画（如测试会重建结构图）后恢复高亮
@@ -538,51 +397,115 @@
     return "收敛 (泛化解)";
   }
 
-  function drawCurve() {
-    const cv = $("#cCurve");
-    const W = 1100, H = 300;
+  // -------------------------------------------------------------------
+  // 选中 seed 的准确率曲线（训练 / 测试），标出顿悟点与当前 epoch
+  // -------------------------------------------------------------------
+  function drawAcc() {
+    const cv = $("#cAcc");
+    if (!cv) return;
+    const W = 1100, H = 260;
     cv.width = W; cv.height = H;
     const ctx = cv.getContext("2d");
+    const L = 62, R = 26, T = 18, B = 34;
     ctx.clearRect(0, 0, W, H);
-    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = "#11141d"; ctx.fillRect(0, 0, W, H);
+
+    const legend = $("#accLegend");
     const curve = state.idx?.curve;
-    if (!curve) return;
-    const ep = curve.epoch;
+    const ep = curve?.epoch, tr = curve?.train_acc, te = curve?.test_acc;
+    if (!ep || !te) {
+      ctx.fillStyle = "#9aa3b2"; ctx.font = "13px sans-serif";
+      ctx.fillText("没有准确率曲线数据（viz-data/index.json 里缺少 curve）", L, H / 2);
+      if (legend) legend.textContent = "—";
+      return;
+    }
     const e0 = ep[0], e1 = ep[ep.length - 1];
-    const X = (e) => 60 + ((e - e0) / (e1 - e0)) * (W - 90);
-    const drawLoss = (key, color) => {
-      const L = curve[key];
-      if (!L) return;
-      const vals = L.map((v) => Math.max(v, 1e-9));
-      const lmin = Math.log10(Math.min(...vals)), lmax = Math.log10(Math.max(...vals));
-      const Y = (v) => H - 30 - ((Math.log10(Math.max(v, 1e-9)) - lmin) / (lmax - lmin)) * (H - 70);
-      ctx.strokeStyle = color; ctx.lineWidth = 2.2; ctx.beginPath();
-      ep.forEach((e, i) => { const px = X(e), py = Y(L[i]); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+    const X = (e) => L + ((e - e0) / (e1 - e0)) * (W - L - R);
+    const Y = (a) => H - B - Math.max(0, Math.min(1, a)) * (H - T - B);
+
+    // 网格与坐标轴
+    ctx.lineWidth = 1;
+    ctx.font = "11px sans-serif";
+    ctx.textAlign = "left";
+    for (let i = 0; i <= 4; i++) {
+      const a = i / 4, y = Y(a);
+      ctx.strokeStyle = i === 0 ? "#3a4257" : "#242a38";
+      ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(W - R, y); ctx.stroke();
+      ctx.fillStyle = "#7f8ba3";
+      ctx.fillText(`${a * 100}%`, 16, y + 4);
+    }
+    ctx.textAlign = "center";
+    const xTicks = [];
+    for (let e = 0; e < e1; e += 5000) xTicks.push(e);
+    xTicks.push(e1);
+    for (const e of xTicks) {
+      const x = X(Math.max(e, e0));
+      ctx.strokeStyle = "#242a38";
+      ctx.beginPath(); ctx.moveTo(x, T); ctx.lineTo(x, H - B); ctx.stroke();
+      ctx.fillStyle = "#7f8ba3";
+      ctx.fillText(e >= 1000 ? `${Math.round(e / 1000)}k` : `${e}`, x, H - B + 16);
+    }
+
+    // 曲线
+    const line = (arr, color, width) => {
+      if (!arr) return;
+      ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
+      ep.forEach((e, i) => { const px = X(e), py = Y(arr[i]); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
       ctx.stroke();
     };
-    drawLoss("test_loss", "#d64541");
-    drawLoss("train_loss", "#2c6fbb");
+    line(tr, "#5aa9ff", 1.8);
+    line(te, "#ff7a6b", 2.2);
 
-    // 当前 epoch 标记
-    if (state.loadedEpoch != null) {
-      const px = X(state.loadedEpoch);
-      ctx.strokeStyle = "#8b2f2f"; ctx.lineWidth = 2;
-      ctx.setLineDash([5, 4]);
-      ctx.beginPath(); ctx.moveTo(px, 18); ctx.lineTo(px, H - 26); ctx.stroke();
+    // 顿悟点
+    const grok = grokEpochOf(curve);
+    if (grok != null) {
+      const gx = X(grok);
+      ctx.strokeStyle = "#6ee7a0"; ctx.lineWidth = 1.6;
+      ctx.setLineDash([6, 5]);
+      ctx.beginPath(); ctx.moveTo(gx, T); ctx.lineTo(gx, H - B); ctx.stroke();
       ctx.setLineDash([]);
-      ctx.fillStyle = "#8b2f2f"; ctx.font = "12px sans-serif";
-      ctx.fillText(state.loadedEpoch, px - 16, H - 8);
+      ctx.fillStyle = "#6ee7a0"; ctx.textAlign = "left";
+      ctx.fillText(`泛化 @ ${grok}`, Math.min(gx + 6, W - R - 76), T + 12);
     }
-    // 轴
-    ctx.fillStyle = "#57606a"; ctx.font = "11px sans-serif";
-    ctx.fillText("epoch →", W - 70, H - 8);
-    ctx.fillText("loss (log) ↑", 8, 16);
 
-    // 交互：点击/拖动设 epoch（找最近可用快照）
+    // 当前 epoch
+    if (state.loadedEpoch != null) {
+      const px = X(Math.max(state.loadedEpoch, e0));
+      ctx.strokeStyle = "#ffd57a"; ctx.lineWidth = 2;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath(); ctx.moveTo(px, T); ctx.lineTo(px, H - B); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#ffd57a"; ctx.textAlign = "right";
+      ctx.fillText(`${state.loadedEpoch}`, px - 5, H - B - 6);
+    }
+    ctx.textAlign = "left"; ctx.fillStyle = "#7f8ba3";
+    ctx.textAlign = "right"; ctx.fillText("epoch →", W - R, H - 5);
+
+    // 图例文字
+    if (legend) {
+      const last = (a) => (a && a.length ? (a[a.length - 1] * 100).toFixed(1) + "%" : "—");
+      const at = (a, epoch) => {
+        if (!a) return "—";
+        let best = 0;
+        for (let i = 0; i < ep.length && ep[i] <= epoch; i++) best = i;
+        return (a[best] * 100).toFixed(1) + "%";
+      };
+      const st = stageOf(state.loadedEpoch ?? e1);
+      legend.innerHTML =
+        `<span>实验 <b>${state.run}</b> · seed <b>${state.seed}</b></span>` +
+        `<span>P=<b>${state.cfg?.p ?? "—"}</b> · d_model=<b>${state.cfg?.d_model ?? "—"}</b> · heads=<b>${state.cfg?.n_heads ?? "—"}</b> · 训练集占比 <b>${state.cfg?.frac_train ?? "—"}</b></span>` +
+        `<span>最终准确率：训练 <b>${last(tr)}</b> · 测试 <b>${last(te)}</b></span>` +
+        `<span>顿悟点 <b>${grok ?? "未出现"}</b></span>` +
+        `<span>当前 epoch <b>${state.loadedEpoch ?? "—"}</b>（训练 ${at(tr, state.loadedEpoch ?? e1)} / 测试 ${at(te, state.loadedEpoch ?? e1)}，${st || "—"}）</span>`;
+    }
+
+    // 交互：点击 / 拖动 → 选最近的快照
     const setFromEvent = (ev) => {
+      if (!state.epochs || !state.epochs.length) return;
       const rect = cv.getBoundingClientRect();
-      const frac = (ev.clientX - rect.left) / rect.width;
-      const epTarget = e0 + frac * (e1 - e0);
+      const frac = Math.min(1, Math.max(0, (ev.clientX - rect.left) / rect.width));
+      const px = frac * W;                                   // 换算回画布坐标（去掉两侧留白）
+      const epTarget = e0 + ((px - L) / (W - L - R)) * (e1 - e0);
       const nearest = state.epochs.reduce((a, b) =>
         Math.abs(b - epTarget) < Math.abs(a - epTarget) ? b : a, state.epochs[0]);
       $("#epSlider").value = state.epochs.indexOf(nearest);
@@ -592,53 +515,254 @@
     cv.onpointermove = (ev) => { if (ev.buttons & 1) setFromEvent(ev); };
   }
 
+  // -------------------------------------------------------------------
+  // 多 seed 横向比较：每个 seed 一小格，点格子即切到该 seed
+  // -------------------------------------------------------------------
+  // ---------------------------------------------------------------
+  // ⓪ 多 seed 横向比较：两种视角
+  //    curve = 效果（准确率曲线，数据来自 index.json，零下载）
+  //    param = 参数（当前 epoch 的 W_E 频率谱，需要逐个 seed 取权重快照）
+  // ---------------------------------------------------------------
+  const SEED_NOTE = {
+    curve: "每格 = 一个 seed 的准确率曲线（" +
+      '<span class="sw" style="background:#4d8fd6"></span>训练集，' +
+      '<span class="sw" style="background:#ff7a6b"></span>测试集；绿色虚线 = 顿悟点，金色虚线 = 当前 epoch，只画在选中的格子里）。' +
+      "格下方给出该 seed 的顿悟 epoch 与最终测试准确率（青蓝色描边 = 当前选中的 seed）；" +
+      "<b>点任意一格即切到该 seed</b>（与工具栏 Seed 下拉、下方曲线卡片联动）。",
+    param: "每格 = 该 seed 在<b>当前 epoch</b> 的 W<sub>E</sub> 频率谱（对 token 轴做 DFT，柱高 = Σ<sub>c</sub>|DFT<sub>c</sub>(k)|²，按每格自己归一）。" +
+      "5 个 seed 的超参数完全相同，差异只有两处：<b>随机初始化</b>与<b>训练/测试划分</b>——" +
+      "结果是每个 seed 都把能量集中到少数几个频率上（稀疏傅里叶电路，集中度 90% 以上），" +
+      "但<b>具体是哪些 k 各不相同</b>（实测两两 top-6 只重合 0–2 个，5 个 seed 没有共同频率）。" +
+      "格下方标注该 seed 的 top-3 频率与能量占比；换 epoch 会重新取 5 份快照（本地缓存，已取过的不再下载）。" +
+      "注：导出时各 seed 保留的快照不一定一样（本 run 里 seed 3/4 只有最终一档），此时会退回到该 seed 最近的快照并标注「最近快照」。",
+  };
+
+  function setSeedMode(mode) {
+    state.seedMode = mode === "param" ? "param" : "curve";
+    for (const b of document.querySelectorAll("#seedModes button")) {
+      b.classList.toggle("on", b.dataset.mode === state.seedMode);
+    }
+    const note = $("#seedNote");
+    if (note) note.innerHTML = SEED_NOTE[state.seedMode];
+    drawSeeds();
+  }
+
+  /** 取某个 (seed, epoch) 的权重快照（带缓存，避免反复下载 887 KB） */
+  async function paramSnap(seed, epoch) {
+    const key = `${state.run}|${seed}|${epoch}`;
+    if (state.snapCache.has(key)) return state.snapCache.get(key);
+    const resp = await fetch(`/viz-data/${state.run}/seed${seed}/e${pad6(epoch)}.bin`);
+    if (!resp.ok) throw new Error(`seed${seed} e${epoch}: ${resp.status}`);
+    const { mats } = parseBin(await resp.arrayBuffer());
+    state.snapCache.set(key, mats);
+    if (state.snapCache.size > 12) {                      // 简单 FIFO，别把内存撑爆
+      state.snapCache.delete(state.snapCache.keys().next().value);
+    }
+    return mats;
+  }
+
+  /** W_E 在前 p 行上的频率能量谱：energy[k] = Σ_c |DFT_c(k)|² */
+  function weSpectrum(mats, p) {
+    const emb = mats["token_embed"];
+    const cols = emb.shape[1];
+    const sub = new Float32Array(p * cols);
+    for (let r = 0; r < p; r++) {
+      for (let c = 0; c < cols; c++) sub[r * cols + c] = emb.data[r * cols + c];
+    }
+    return fourierNorms1d(sub, p, cols).map((v) => v * v);
+  }
+
+  async function drawSeedSpectra(seeds) {
+    const gen = ++state.paramGen;
+    const p = state.cfg?.p ?? 113;
+    const bySeed = state.index?.runs?.[state.run]?.seeds || {};
+    const want = state.loadedEpoch ?? (state.epochs?.length ? state.epochs[state.epochs.length - 1] : null);
+    const status = $("#seedStatus");
+    if (want == null) return;
+    let done = 0, fallback = 0;
+    for (const s of seeds) {
+      const cv = $(`canvas[data-seed="${s}"]`);
+      const cap = $(`[data-cap="${s}"]`);
+      // 各 seed 导出的快照不全（有的只存了最终一档）→ 退回到该 seed 最近的快照
+      const eps = (bySeed[s]?.epochs || []).slice().sort((a, b) => a - b);
+      const epoch = eps.length
+        ? eps.reduce((a, b) => (Math.abs(b - want) < Math.abs(a - want) ? b : a), eps[0])
+        : want;
+      const exact = epoch === want;
+      if (!exact) fallback++;
+      if (status) status.textContent = `载入参数快照 ${done}/${seeds.length} …（目标 epoch ${want}）`;
+      try {
+        const mats = await paramSnap(s, epoch);
+        if (gen !== state.paramGen) return;              // 期间又换了 epoch / seed / 模式
+        const energy = weSpectrum(mats, p);
+        const order = energy.map((v, k) => [v, k]).sort((a, b) => b[0] - a[0]);
+        const total = energy.reduce((a, b) => a + b, 0) || 1;
+        const top3 = order.slice(0, 3).map((e) => e[1]).sort((a, b) => a - b);
+        const share = (100 * order.slice(0, 3).reduce((a, e) => a + e[0], 0)) / total;
+        drawSeedSpec(cv, energy, top3, s === String(state.seed));
+        if (cap) {
+          cap.innerHTML = `<div>seed <b>${s}</b> · epoch <b>${epoch}</b>` +
+            (exact ? "" : ' <span class="seed-fb">最近快照</span>') + `</div>` +
+            `<div>top k: <b>${top3.join(", ")}</b> · 占比 <b>${share.toFixed(1)}%</b></div>`;
+        }
+      } catch (err) {
+        console.error(err);
+        if (cap) cap.innerHTML = `<div>seed <b>${s}</b></div><div>快照读取失败</div>`;
+      }
+      done++;
+      if (gen !== state.paramGen) return;
+    }
+    if (status) {
+      status.textContent = `已载入 ${seeds.length} 份快照（epoch ${want}）· 缓存 ${state.snapCache.size} 份` +
+        (fallback ? ` · ${fallback} 份用了该 seed 的最近快照` : "");
+    }
+  }
+
+  /** 一小格：频率能量柱（金色 = W_E 一贯的配色，深色 = 当前选中格里的 top-3） */
+  function drawSeedSpec(cv, energy, top3, isCur) {
+    if (!cv) return;
+    const W = 360, H = 205, L = 26, R = 8, T = 22, B = 18;
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext("2d");
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#0d1017"; ctx.fillRect(0, 0, W, H);
+    const n = energy.length;
+    const maxE = Math.max(...energy, 1e-12);
+    const bw = (W - L - R) / n;
+    const topSet = new Set(top3);
+    for (let k = 0; k < n; k++) {
+      const h = Math.max(0.6, (energy[k] / maxE) * (H - T - B));
+      ctx.fillStyle = topSet.has(k) ? (isCur ? "#ffb020" : "#c9a15c") : "#4a3f2a";
+      ctx.fillRect(L + k * bw, H - B - h, Math.max(1, bw - 0.8), h);
+    }
+    ctx.strokeStyle = "#333c50"; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(L, H - B); ctx.lineTo(W - R, H - B); ctx.stroke();
+    ctx.fillStyle = "#6b7688"; ctx.font = "10px sans-serif";
+    ctx.textAlign = "left"; ctx.fillText("k = 0", L, H - 5);
+    ctx.textAlign = "center"; ctx.fillText(`频率 k → ${n - 1}`, (L + W - R) / 2, H - 5);
+    ctx.textAlign = "right"; ctx.fillText("归一化能量", W - R, T - 8);
+  }
+
+  function drawSeeds() {
+    const box = $("#seedRow");
+    if (!box) return;
+    const bySeed = state.index?.runs?.[state.run]?.seeds;
+    if (!bySeed) { box.innerHTML = ""; return; }
+    const seeds = Object.keys(bySeed).sort((a, b) => Number(a) - Number(b));
+    const mode = state.seedMode || "curve";
+
+    // 格子结构只在 seed 列表变化时重建（重建会重置 canvas）
+    if (box.dataset.seeds !== seeds.join(",")) {
+      box.dataset.seeds = seeds.join(",");
+      box.innerHTML = seeds.map((s) => (
+        `<div class="seed-cell" data-seed="${s}">` +
+        `<canvas data-seed="${s}" width="360" height="205"></canvas>` +
+        `<div class="seed-cap" data-cap="${s}"></div>` +
+        `</div>`
+      )).join("");
+      for (const cell of box.querySelectorAll(".seed-cell")) {
+        cell.onclick = () => {
+          const s = cell.dataset.seed;
+          if (s === String(state.seed)) return;
+          $("#seedSel").value = s;
+          onSeed();                       // 与工具栏下拉走同一条路径
+        };
+      }
+    }
+    const hint = $("#seedsHint");
+    if (hint) hint.textContent = `${seeds.length} 个 seed · 点任一格切换`;
+    for (const s of seeds) {
+      box.querySelector(`.seed-cell[data-seed="${s}"]`)?.classList.toggle("on", s === String(state.seed));
+    }
+
+    if (mode === "param") {
+      // 先画底色，数据到了再逐格填（见 drawSeedSpectra）
+      for (const s of seeds) {
+        const cv = $(`canvas[data-seed="${s}"]`);
+        if (cv) {
+          cv.width = 360; cv.height = 205;
+          const ctx = cv.getContext("2d");
+          ctx.fillStyle = "#0d1017"; ctx.fillRect(0, 0, 360, 205);
+          ctx.fillStyle = "#7f8ba3"; ctx.font = "11px sans-serif";
+          ctx.fillText("载入中…", 30, 100);
+        }
+        const cap = $(`[data-cap="${s}"]`);
+        if (cap) cap.innerHTML = `<div>seed <b>${s}</b></div><div>—</div>`;
+      }
+      drawSeedSpectra(seeds);             // 异步填充
+      return;
+    }
+
+    for (const s of seeds) {
+      const curve = bySeed[s]?.curve;
+      drawSeedMini(box.querySelector(`canvas[data-seed="${s}"]`), curve, s === String(state.seed));
+      const cap = box.querySelector(`[data-cap="${s}"]`);
+      if (cap) {
+        const te = curve?.test_acc;
+        const fin = te && te.length ? (te[te.length - 1] * 100).toFixed(1) + "%" : "—";
+        cap.innerHTML = `<div>seed <b>${s}</b></div>` +
+          `<div>泛化 <b>${grokEpochOf(curve) ?? "—"}</b> · 末测 <b>${fin}</b></div>`;
+      }
+    }
+  }
+
+  /** 一小格：单个 seed 的训练/测试准确率曲线（无交互，坐标轴极简） */
+  function drawSeedMini(cv, curve, isCur) {
+    if (!cv) return;
+    const W = 360, H = 205, L = 30, R = 8, T = 10, B = 16;
+    cv.width = W; cv.height = H;
+    const ctx = cv.getContext("2d");
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#0d1017"; ctx.fillRect(0, 0, W, H);
+
+    const ep = curve?.epoch, tr = curve?.train_acc, te = curve?.test_acc;
+    if (!ep || !te) {
+      ctx.fillStyle = "#7f8ba3"; ctx.font = "11px sans-serif";
+      ctx.fillText("无曲线数据", L, H / 2);
+      return;
+    }
+    const e0 = ep[0], e1 = ep[ep.length - 1];
+    const X = (e) => L + ((e - e0) / (e1 - e0)) * (W - L - R);
+    const Y = (a) => H - B - Math.max(0, Math.min(1, a)) * (H - T - B);
+
+    ctx.font = "10px sans-serif"; ctx.textAlign = "left";
+    for (const a of [0, 0.5, 1]) {
+      const y = Y(a);
+      ctx.strokeStyle = a === 0 ? "#333c50" : "#1e2431";
+      ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(L, y); ctx.lineTo(W - R, y); ctx.stroke();
+      ctx.fillStyle = "#6b7688";
+      ctx.fillText(`${a * 100}%`, 3, y + 3.5);
+    }
+    const line = (arr, color, w) => {
+      if (!arr) return;
+      ctx.strokeStyle = color; ctx.lineWidth = w; ctx.beginPath();
+      ep.forEach((e, i) => { const px = X(e), py = Y(arr[i]); i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+      ctx.stroke();
+    };
+    line(tr, "#4d8fd6", 1.3);
+    line(te, "#ff7a6b", 1.8);
+
+    const grok = grokEpochOf(curve);
+    if (grok != null) {
+      ctx.strokeStyle = "#6ee7a0"; ctx.lineWidth = 1.3;
+      ctx.setLineDash([5, 4]);
+      ctx.beginPath(); ctx.moveTo(X(grok), T); ctx.lineTo(X(grok), H - B); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    if (isCur && state.loadedEpoch != null) {          // 当前 epoch 只画在选中的格子里
+      ctx.strokeStyle = "#ffd57a"; ctx.lineWidth = 1.6;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath(); ctx.moveTo(X(Math.max(state.loadedEpoch, e0)), T); ctx.lineTo(X(Math.max(state.loadedEpoch, e0)), H - B); ctx.stroke();
+      ctx.setLineDash([]);
+    }
+    ctx.textAlign = "right"; ctx.fillStyle = "#6b7688";
+    ctx.fillText(`${Math.round(e1 / 1000)}k ep`, W - R, H - 4);
+  }
+
   // ===================================================================
   // 视图渲染
   // ===================================================================
-  function matView() {
-    if (!state.mats) return;
-    const mat = (n) => state.mats[n];
-    const get = (m) => (i) => m.data[i];
-
-    // Embedding W_E 全表 + 前 p 行 Fourier
-    const emb = mat("token_embed");
-    renderHeat($("#cWE"), emb.shape, get(emb), { transpose: true });
-    const p = state.cfg.p;
-    const colsE = emb.shape[1];
-    const sub = new Float32Array(p * colsE);
-    for (let r = 0; r < p; r++) for (let c = 0; c < colsE; c++) sub[r * colsE + c] = emb.data[r * colsE + c];
-    const nE = fourierNorms1d(sub, p, colsE);
-    renderBars($("#cWEf"), nE, Array.from({ length: nE.length }, (_, i) => i));
-
-    // W_L = W_U @ W_out
-    const U = mat("unembed");          // [p, d]
-    const O = mat("mlp_out.w");        // [d, n_mlp]
-    const d = state.cfg.d_model, n = state.cfg.n_mlp;
-    const WL = new Float32Array(p * n);
-    for (let a = 0; a < p; a++) {
-      for (let j = 0; j < n; j++) {
-        let s = 0;
-        for (let k = 0; k < d; k++) s += U.data[a * d + k] * O.data[k * n + j];
-        WL[a * n + j] = s;
-      }
-    }
-    renderHeat($("#cWL"), [p, n], (i) => WL[i]);
-    const nL = fourierNorms1d(WL, p, n);
-    renderBars($("#cWLf"), nL, Array.from({ length: nL.length }, (_, i) => i));
-
-    // 注意力头
-    const head = Number($("#headSel").value);
-    const which = $("#matSel").value;
-    const Hm = mat(`head${head}.${which}`);
-    renderHeat($("#cHead"), Hm.shape, get(Hm), { transpose: true });
-
-    // MLP
-    const Wi = mat("mlp_in.w");
-    renderHeat($("#cWin"), Wi.shape, get(Wi), { transpose: true });
-    const Wo = mat("mlp_out.w");
-    renderHeat($("#cWout"), Wo.shape, get(Wo), { transpose: true });
-  }
-
   // ===================================================================
   // 载入
   // ===================================================================
@@ -651,7 +775,9 @@
     const st = stageOf(epoch);
     pill.style.display = st ? "inline-block" : "none";
     pill.textContent = st;
-    drawCurve();
+    drawAcc();
+    drawSeeds();
+    drawSeeds();
     if (state.epochs.indexOf(epoch) !== Number($("#epSlider").value)) {
       $("#epSlider").value = state.epochs.indexOf(epoch);
     }
@@ -669,9 +795,18 @@
     if (tr && !tr.hidden && state.lastTest) { await runTest(state.lastTest); }
   }
 
+  /** 载入某个 epoch 的权重快照。注意：这是**完全自动**的 ——
+   *  onSeed / 滑块 / 点击曲线 / 结构图交互都会经由 selectEpoch 调到这里，
+   *  工具栏上那个元素只是状态显示（不是按钮）。 */
   async function loadWeights(epoch) {
-    const btn = $("#loadBtn");
-    btn.disabled = true; btn.innerHTML = '<span class="spin"></span> 载入中…';
+    const st = $("#loadStatus");
+    const setStatus = (text, cls) => {
+      if (!st) return;
+      st.classList.toggle("busy", cls === "busy");
+      st.classList.toggle("err", cls === "err");
+      st.innerHTML = (cls === "busy" ? '<span class="spin"></span> ' : "") + text;
+    };
+    setStatus(`载入 e${epoch}…`, "busy");
     try {
       const file = `e${pad6(epoch)}.bin`;
       const base = `/viz-data/${state.run}/seed${state.seed}/${file}`;
@@ -681,12 +816,12 @@
       const { mats } = parseBin(buf);
       state.mats = mats;
       state.freqPick = {};          // 自动挑中的维度作废，下次打开重新挑
-      matView();
+      setStatus(`权重已载入 e${epoch}`);
+      buildArch(state.cfg, state.sample);   // 结构图里的“输出张量”要按新权重重画
     } catch (err) {
       console.error(err);
+      setStatus(`载入失败 e${epoch}`);
       alert(`载入权重失败：${err.message}`);
-    } finally {
-      btn.disabled = false; btn.innerHTML = "载入权重";
     }
   }
 
@@ -709,11 +844,8 @@
     epSlider.max = state.epochs.length - 1;
     epSlider.value = state.epochs.length - 1;   // 默认载入最终
     epSlider.oninput = () => selectEpoch(state.epochs[Number(epSlider.value)]);
-    drawCurve();
-    // head 下拉
-    const hs = $("#headSel");
-    hs.innerHTML = "";
-    for (let i = 0; i < idx.config.n_heads; i++) hs.add(new Option(`head ${i}`, String(i)));
+    drawAcc();
+    drawSeeds();
     selectEpoch(state.epochs[state.epochs.length - 1]);
   }
 
@@ -784,6 +916,7 @@
     state.testList = null;
     state.testKey = null;
     state.lastTest = null;
+    state.mats = null;            // 换了 seed/run，旧权重作废（结构图会先显示“载入中”）
     const r = $("#testResult");
     if (r) r.hidden = true;
     const ed = $("#freqResult");
@@ -824,6 +957,43 @@
     return state.testList;
   }
 
+  /** 取一次真实前向的各阶段输出张量（结构图里画的是“经过权重计算以后的结果”）。
+   *  没有权重（还没载入）时返回 null，结构图给出占位提示。 */
+  function archTensors(a, b) {
+    if (!state.mats || !state.cfg) return null;
+    const ws = forwardCore(a, b);
+    const d = state.cfg.d_model, nh = state.cfg.n_heads;
+    const cp = (arr, from) => arr.slice(from, from + d);
+    return {
+      emb: [cp(ws.x0b, 0), cp(ws.x0b, d), cp(ws.x0b, 2 * d)],        // 3×d：W_E[t] + pos
+      heads: Array.from({ length: nh }, (_, i) => cp(ws.headOut, (i * 3 + 2) * d)), // 每个头在「=」处的输出
+      attn: cp(ws.acc, 2 * d),                                       // 4 头之和（位置「=」的残差流增量）
+      resid2: ws.resid2.slice(),                                     // MLP 的输入
+      hid: ws.h.slice(),                                             // ReLU 之后的隐层
+      mlpOut: ws.o.slice(),                                          // MLP 输出（+b_out）
+      logits: ws.logits.slice(),                                     // 113 类 logit
+    };
+  }
+
+  /** 一条“张量条带”：以中线为基准，n 个分量画成 n 根细竖条
+   *  （正=琥珀向上、负=天蓝向下；高度 ∝ (|v| / vmax)^0.65，幂次压缩是为了让小分量也看得见） */
+  function strip(vals, x, y, w, h, vmax) {
+    const n = vals.length, bw = w / n, mid = y + h / 2, half = h / 2 - 0.5;
+    let t = `<line x1="${x}" y1="${mid.toFixed(1)}" x2="${(x + w).toFixed(1)}" y2="${mid.toFixed(1)}" stroke="#3a4257" stroke-width="0.6"/>`;
+    for (let j = 0; j < n; j++) {
+      const v = vals[j];
+      const bh = Math.max(0.9, Math.pow(Math.min(1, Math.abs(v) / vmax), 0.65) * half);
+      const col = v >= 0 ? "#ffb020" : "#5aa9ff";
+      const yy = v >= 0 ? mid - bh : mid;
+      t += `<rect x="${(x + j * bw).toFixed(2)}" y="${yy.toFixed(2)}" width="${Math.max(0.5, bw - 0.25).toFixed(2)}" height="${bh.toFixed(2)}" fill="${col}"/>`;
+    }
+    return t;
+  }
+  /** 若干组数值的绝对值最大（各块各自的归一化基准） */
+  const vmaxOf = (lists) => lists.reduce((mx, a) => a.reduce((mm, v) => Math.max(mm, Math.abs(v)), mx), 1e-9);
+  /** 单组数值的绝对值最大（在标签里报一下这个条带的实际幅度） */
+  const peakOf = (a) => a.reduce((mm, v) => Math.max(mm, Math.abs(v)), 0);
+
   /** 复用的暂存缓冲：全分辨率网格要跑上万次前向，避免每次新建 ~20 个 TypedArray */
   let _ws = null;
   function workspace(d, dh, nh, nm, p) {
@@ -832,6 +1002,7 @@
     _ws = {
       key,
       x: new Float64Array(3 * d), x0b: new Float64Array(3 * d), acc: new Float64Array(3 * d),
+      headOut: new Float64Array(nh * 3 * d),            // 每个头自己的输出（经 W_O）
       q: new Float64Array(3 * dh), k: new Float64Array(3 * dh), v: new Float64Array(3 * dh),
       attn: new Float64Array(9), srow: new Float64Array(3), ctx: new Float64Array(3 * dh),
       resid2: new Float64Array(d), o: new Float64Array(d), x2: new Float64Array(d),
@@ -894,6 +1065,7 @@
         let s = 0;
         for (let j = 0; j < dh; j++) s += ctx[t * dh + j] * WO[c * dh + j];
         attnAcc[t * d + c] += s;                          // 先累加所有头的输出
+        ws.headOut[(hi * 3 + t) * d + c] = s;              // 同时留一份“这个头自己的输出”
       }
     }
     for (let i = 0; i < 3 * d; i++) x[i] = x0b[i] + attnAcc[i];   // 再一次性残差
@@ -985,7 +1157,7 @@
       const ep = state.loadedEpoch != null ? state.loadedEpoch : state.epochs[state.epochs.length - 1];
       await loadWeights(ep);
     }
-    if (!state.mats) { alert("请先载入权重（点上方“载入权重”）"); return; }
+    if (!state.mats) { alert("权重还没载入成功（看工具栏右侧的状态），切换一下 Seed 或拖动 epoch 重试即可"); return; }
     btn.disabled = true; btn.innerHTML = "运行中…";
     try {
       const cfg = state.cfg;
@@ -1355,7 +1527,7 @@
       why: "最后的 logits 也只在关键频率上有分量：几个余弦波在这里<b>相长/相消干涉</b>，正确类别 c* = a+b 处被抬到最大。",
       hint: "固定 a = 0、扫 b，看某个输出类的 logit：全链路的频率在这里相长/相消干涉，正确类别被抬到最大。" +
             "结构图上点亮的是最右侧 logits 输出向量里<b>所选输出类的那一格</b>（换“输出类”下拉框会跟着移动）。" +
-            "上面那个 UNEMBED 矩阵只作为结构示意（读出权重，不再单独出面板）；这里看的才是它真正读出来的值。",
+            "logits 就是残差流经 W_U 读出得到的结果（结构图上不再单画 UNEMBED 权重块，它的作用已体现在这里）。",
       part: "logitsCell",
     },
   };
@@ -1410,7 +1582,7 @@
     return best;
   }
 
-  /** 频率视图主流程：src ∈ embed / attn / mlp / unembed / logits */
+  /** 频率视图主流程：src ∈ embed / attn / mlp / logits */
   async function runFreqView(src) {
     const spec = FREQ_SRC[src] || FREQ_SRC.embed;
     const btn = $(`#${spec.btn}`);
@@ -1423,7 +1595,7 @@
     setPanelInfo(`freq:${src}`);
     const ep = state.loadedEpoch != null ? state.loadedEpoch : state.epochs[state.epochs.length - 1];
     if (!state.mats) await loadWeights(ep);
-    if (!state.mats) { alert("请先载入权重（点上方“载入权重”）"); return; }
+    if (!state.mats) { alert("权重还没载入成功（看工具栏右侧的状态），切换一下 Seed 或拖动 epoch 重试即可"); return; }
     btn.disabled = true; btn.innerHTML = "分析中…";
     try {
       const p = state.cfg.p, d = state.cfg.d_model;
@@ -1511,8 +1683,7 @@
 
   async function init() {
     try {
-      state.index = await fetchJSON("/viz-data/index.json");
-    } catch (e) {
+      state.index = await fetchJSON("/viz-data/index.json");    } catch (e) {
       $("#runSel").innerHTML = "<option>暂无 viz 数据（请先运行 python 导出）</option>";
       console.error(e);
       return;
@@ -1528,10 +1699,13 @@
     const rw = $("#runWrap");
     if (rw) rw.style.display = runs.length > 1 ? "" : "none";
     rs.onchange = onRun;
-    $("#matSel").onchange = () => state.mats && matView();
-    $("#headSel").onchange = () => state.mats && matView();
     const tb = $("#testBtn");
     if (tb) tb.addEventListener("click", runTest);
+    // ⓪ 卡片的视角切换：效果（准确率曲线）/ 参数（W_E 频率谱）
+    for (const b of document.querySelectorAll("#seedModes button")) {
+      b.onclick = () => setSeedMode(b.dataset.mode);
+    }
+    setSeedMode("curve");
     // 五个“频率”按钮：同一套视图，只是数据来源不同（沿数据流 EMBED → … → LOGITS）
     for (const key of Object.keys(FREQ_SRC)) {
       const b = $(`#${FREQ_SRC[key].btn}`);
