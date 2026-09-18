@@ -57,6 +57,7 @@ SITEBAR = """<div class="sitebar">
   <div class="sitebar-inner">
     <a class="sb-brand" href="/"><span class="sb-logo">悟</span>顿悟现象研究 <small>· 论文英文原文（本地完整版）</small></a>
     <nav class="sb-nav">
+      <a class="sb-btn ghost" href="/reverse.html">🔬 逆向工程</a>
       <a class="sb-btn" href="/model.html">🧬 模型可视化</a>
     </nav>
   </div>
@@ -101,6 +102,7 @@ HEAD_STYLE = """<style>
   .sb-nav a { color: #35404d; text-decoration: none; border: 0; }
   .sb-nav a:hover { color: #8b2f2f; }
   .sb-nav a.sb-btn { background: #8b2f2f; color: #fff; padding: 5px 12px; border-radius: 999px; }
+  .sb-nav a.sb-btn.ghost { background: #fff; color: #8b2f2f; border: 1px solid #e6cfcb; }
   .sitebar-note {
     max-width: 1180px; margin: 14px auto 6px; padding: 11px 14px; background: #fff;
     border: 1px solid #e4e2dd; border-left: 3px solid #8b2f2f; border-radius: 8px;

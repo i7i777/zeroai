@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>逆向工程：从数字到答案 · 顿悟现象研究</title>
+<link rel="stylesheet" href="/css/style.css" />
+<style>
+  /* 每一层 = 站点风格（浅色页面 + 深色卡片）里的一个深色卡片，图形用亮色描边 */
+  html::-webkit-scrollbar { width: 10px; height: 10px; }
+  .rev-toolbar {
+    position: sticky; top: 60px; z-index: 40; backdrop-filter: blur(6px);
+    background: rgba(255, 255, 255, .92); border-bottom: 1px solid var(--line);
+  }
+  .rev-toolbar .inner {
+    max-width: 1180px; margin: 0 auto; padding: 10px 20px;
+    display: flex; flex-wrap: wrap; gap: 10px 22px; align-items: center;
+    font-size: 13px; color: var(--ink-soft);
+  }
+  .rev-toolbar label { color: #6b7280; margin-right: 6px; }
+  .rev-toolbar b { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #8b2f2f; font-size: 14px; }
+  .rev-toolbar select {
+    font-size: 13px; padding: 3px 8px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink);
+  }
+  input[type=range].rev {
+    -webkit-appearance: none; width: 210px; height: 4px; background: #e3e6ec; border-radius: 2px; outline: none; vertical-align: middle;
+  }
+  input[type=range].rev::-webkit-slider-thumb {
+    -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%;
+    background: #8b2f2f; cursor: pointer; border: 2px solid #fff; box-shadow: 0 0 0 1px rgba(139,47,47,.5);
+  }
+  input[type=range].rev::-moz-range-thumb {
+    width: 16px; height: 16px; border-radius: 50%; background: #8b2f2f; cursor: pointer; border: 2px solid #fff;
+  }
+  .rev-chip { background: #f1f3f7; border-radius: 999px; padding: 2px 10px; font-size: 12px; color: #57606a; }
+  .rev-chip.err { background: #ffefef; color: #a63b3b; }
+
+  .rev-wrap { max-width: 1180px; margin: 0 auto; padding: 22px 20px 80px; }
+  .rev-hero h1 {
+    font-size: 1.55rem; margin: 0 0 6px; font-weight: 700;
+    background: linear-gradient(90deg, #2f6fd0, #1f8a68); -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  .rev-hero p { color: #57606a; margin: 0 0 18px; font-size: .95rem; }
+
+  .flow { position: relative; }
+  .step { display: flex; gap: 16px; margin-bottom: 18px; }
+  .step-marker { flex: 0 0 40px; display: flex; justify-content: center; position: relative; }
+  .step-marker span {
+    width: 32px; height: 32px; border-radius: 50%; background: #fff; border: 2px solid #d8dde7;
+    display: flex; align-items: center; justify-content: center; font: 700 .85rem ui-monospace, monospace;
+    color: #8b2f2f; z-index: 1; flex-shrink: 0;
+  }
+  .step-marker::after { content: ""; position: absolute; top: 34px; bottom: -18px; width: 2px; background: #e6e9ef; }
+  .step:last-child .step-marker::after { display: none; }
+  .step-card {
+    flex: 1; min-width: 0; background: #0e1016; color: #dfe3ea;
+    border-radius: 14px; padding: 16px 20px; overflow-x: auto;
+  }
+  .step-card h2 { font-size: 1rem; margin: 0 0 4px; color: #a3c4ff; border: none; }
+  .step-card .desc { color: #8b97b5; font-size: .86rem; margin: 0 0 12px; }
+  .step-card code {
+    background: #0a0d16; padding: 1px 6px; border-radius: 4px; color: #ffd08a;
+    font: .85em ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .step-card canvas { display: block; width: 100%; height: auto; margin: 6px 0; }
+
+  /* 画布右上角的两个小图标：切换「用真实频率合成 emb(a) / emb(b)」 */
+  .canvas-wrap { position: relative; }
+  .rev-icons { position: absolute; top: 8px; right: 10px; display: flex; gap: 8px; z-index: 2; }
+  .rev-icon {
+    display: inline-flex; align-items: center; gap: 5px; cursor: pointer;
+    font: 600 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: #8b97b5; background: #11141d; border: 1px solid #2a3454;
+    border-radius: 999px; padding: 4px 10px; line-height: 1.4;
+  }
+  .rev-icon:hover { border-color: #4ea1ff; color: #cfe2ff; }
+  .rev-icon.on { background: rgba(78,161,255,.16); border-color: #4ea1ff; color: #cfe2ff; }
+  .rev-icon:disabled { opacity: .35; cursor: default; }
+  .rev-icon:disabled:hover { border-color: #2a3454; color: #8b97b5; }
+
+  .num-display { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 16px; padding: 16px 0 6px; }
+  .num-box {
+    padding: 12px 24px; border-radius: 12px; font: 700 1.45rem ui-monospace, monospace;
+    border: 2px solid; min-width: 130px; text-align: center;
+  }
+  .num-box.blue { color: #4ea1ff; border-color: rgba(78,161,255,.45); background: rgba(78,161,255,.07); }
+  .num-box.pink { color: #ff7eb6; border-color: rgba(255,126,182,.45); background: rgba(255,126,182,.07); }
+  .num-box.green { color: #6ee7a8; border-color: rgba(110,231,168,.45); background: rgba(110,231,168,.07); }
+  .num-box.red { color: #ff8a80; border-color: rgba(255,138,128,.45); background: rgba(255,138,128,.07); }
+  .num-plus, .num-arrow { font-size: 1.4rem; color: #5d6a8f; }
+
+  .rev-note {
+    background: #0c1019; border-left: 3px solid #3d7bff; padding: 10px 14px;
+    border-radius: 0 8px 8px 0; font-size: .84rem; color: #8b97b5; margin-top: 12px;
+  }
+  .rev-note b { color: #a3c4ff; }
+  .rev-note.warn { border-left-color: #c0843c; }
+  .rev-note.warn b { color: #e0b878; }
+  .rev-note.ok { border-left-color: #2e8b66; }
+  .rev-note.ok b { color: #7ce0a8; }
+
+  .formula {
+    font: .84rem ui-monospace, SFMono-Regular, Menlo, monospace; color: #c6d2ee;
+    background: #0a0d16; border: 1px solid #1a2033; border-radius: 8px; padding: 9px 13px;
+    margin: 8px 0; overflow-x: auto; white-space: nowrap;
+  }
+  .formula .hl { color: #ffd08a; } .formula .hl2 { color: #6ee7a8; }
+  .formula .hl3 { color: #4ea1ff; } .formula .hl4 { color: #ff7eb6; }
+
+  /* 真实 vs 理想 的对照小表 */
+  .rev-cmp { display: flex; flex-wrap: wrap; gap: 14px; margin: 6px 0 2px; font-size: .84rem; }
+  .rev-cmp > div { flex: 1 1 260px; min-width: 240px; background: #11141d; border: 1px solid #232a38; border-radius: 10px; padding: 10px 12px; }
+  .rev-cmp h3 { margin: 0 0 6px; font-size: .84rem; color: #dfe3ea; border: none; }
+  .rev-cmp .kv { color: #8b97b5; }
+  .rev-cmp .kv b { color: #a3c4ff; font-family: ui-monospace, monospace; }
+  .rev-tag { font-size: 11px; border-radius: 999px; padding: 1px 8px; margin-left: 6px; }
+  .rev-tag.ideal { background: #241f2e; color: #c9a15c; border: 1px solid #4a3f2a; }
+  .rev-tag.real { background: #12232c; color: #8fe3f2; border: 1px solid #2a4550; }
+  .rev-foot { color: #6b7280; font-size: .82rem; text-align: center; margin-top: 26px; }
+  .rev-foot a { color: #8b2f2f; }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <a class="brand" href="/">
+      <span class="logo">悟</span>
+      <span>顿悟现象研究 <small>· 逆向工程</small></span>
+    </a>
+    <nav class="main">
+      <a href="/">首页</a>
+      <a class="btn" href="/reverse.html">🔬 逆向工程</a>
+      <a class="btn ghost" href="/model.html">🧬 模型可视化</a>
+    </nav>
+  </div>
+</header>
+
+<div class="rev-toolbar">
+  <div class="inner">
+    <span><label for="seedSel">权重</label><select id="seedSel"></select></span>
+    <span><label for="aSlider">数字 a =</label><b id="aVal">15</b>
+      <input type="range" class="rev" id="aSlider" name="revA" autocomplete="off" min="0" max="112" value="15" /></span>
+    <span><label for="bSlider">数字 b =</label><b id="bVal">27</b>
+      <input type="range" class="rev" id="bSlider" name="revB" autocomplete="off" min="0" max="112" value="27" /></span>
+    <span class="rev-chip" id="loadChip">载入中…</span>
+    <span class="rev-chip" id="splitChip">—</span>
+  </div>
+</div>
+
+<div class="rev-wrap">
+  <div class="rev-hero">
+    <h1>从数字到答案：逆向工程一个学会了模加法的 Transformer</h1>
+    <p>
+      论文（arXiv:2301.05217）用机制可解释性把一个小 Transformer 的权重读穿了：它其实在做<strong>频域里的旋转乘法</strong>。
+      下面 6 步走完整条数据流。拖动滑块换 (a, b)，<span style="color:#1f8a68">绿色标</span>的都是<strong>用真实权重现算</strong>出来的，
+      <span style="color:#b8860b">橙色标</span>的是教科书式的理想化示意。
+    </p>
+  </div>
+
+  <div class="flow">
+
+    <!-- 1 -->
+    <div class="step">
+      <div class="step-marker"><span>1</span></div>
+      <div class="step-card">
+        <h2>输入：两个数字 a 和 b</h2>
+        <p class="desc">
+          任务是算 <code>(a + b) mod P</code>，P = 113（质数）。输入写成「a b =」三个 token，
+          答案从「=」这个位置上读出来。
+        </p>
+        <div class="num-display">
+          <div class="num-box blue">a = <span id="aBig">15</span></div>
+          <div class="num-plus">+</div>
+          <div class="num-box pink">b = <span id="bBig">27</span></div>
+          <div class="num-arrow">→</div>
+          <div class="num-box green">答案 = <span id="ansBig">42</span></div>
+          <div class="num-arrow">·</div>
+          <div class="num-box" id="predBox" style="min-width:170px;font-size:1.2rem;">模型预测 = <span id="predBig">—</span></div>
+        </div>
+        <div class="rev-note">
+          <b>真实模型：</b><span id="step1Note">载入权重后，这里给出这一对 (a, b) 的真实前向结果。</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2 -->
+    <div class="step">
+      <div class="step-marker"><span>2</span></div>
+      <div class="step-card">
+        <h2>输入表示：one-hot（时域脉冲）</h2>
+        <p class="desc">
+          每个数字被写成长度 113 的向量：只有对应位置是 1，其余是 0。这是「时域」视角——脉冲在时域里是局域的，但要在时域里做加法很别扭。
+        </p>
+        <canvas id="onehotCanvas" width="1400" height="290"></canvas>
+        <div class="rev-note">
+          真正喂进网络的是三个位置：<b>a</b>、<b>b</b>、以及「=」（词表 114 = 113 个数字 + 1 个等号）。答案只在「=」位置上读出。
+        </div>
+      </div>
+    </div>
+
+    <!-- 3 -->
+    <div class="step">
+      <div class="step-marker"><span>3</span></div>
+      <div class="step-card">
+        <h2>嵌入层：把数字搬到「多个圆上的相位」</h2>
+        <p class="desc">
+          理想化的说法是：嵌入相当于对 one-hot 做 DFT，每个频率 k 贡献一对
+          <code>(cos(2πka/P), −sin(2πka/P))</code>，于是「位置 a」变成了「一批转速下圆上的角度」。
+        </p>
+        <div class="canvas-wrap">
+          <canvas id="embedCanvas" width="1400" height="420"></canvas>
+          <div class="rev-icons">
+            <button id="simA" class="rev-icon" type="button" disabled
+              title="用 emb(a) 里的那几个频率叠加回去（逆变换），看 one-hot 里的 a 是怎样变成一个唯一波峰的；再点一下收起">🌀 a</button>
+            <button id="simB" class="rev-icon" type="button" disabled
+              title="用 emb(b) 里的那几个频率叠加回去（逆变换），看 one-hot 里的 b 是怎样变成一个唯一波峰的；再点一下收起">🌀 b</button>
+          </div>
+        </div>
+        <div class="rev-note" style="margin-top:12px;">
+          <b>右上角两个图标 🌀a / 🌀b：</b>点一下就把 <code>emb(a)</code> / <code>emb(b)</code> 里存着的那几个频率
+          <strong>叠加回去</strong>（傅里叶逆变换）——所有频率在 <code>n = a</code> 处同相相加、在其它位置互相抵消，
+          于是 token 轴上只剩一个波峰，正好落在 one-hot 里那个 1 的位置。这就是「<b>几个不同频率叠加起来表示一个唯一点</b>」的过程。
+        </div>
+        <div class="formula">
+          emb(a) ≈ [ <span class="hl3">cos(θ₁ᵃ)</span>, <span class="hl4">−sin(θ₁ᵃ)</span>, <span class="hl3">cos(θ₂ᵃ)</span>, <span class="hl4">−sin(θ₂ᵃ)</span>, … ]　其中 θₖᵃ = 2πka/P，共 k = 1…56 → 113 个分量，填满 128 维中的 113 维
+        </div>
+        <div class="rev-note warn">
+          <b>上面这张是理想化布局（128 维全画出来了）</b>：为什么只需要 113 维？——
+          113 长的实序列做 DFT 恰好得到 1 个直流 + 56 个 <code>cos</code> + 56 个 <code>sin</code> = 113 个实数，
+          剩下的 15 维用不上。<br />
+          但请把它当成「换个坐标基之后的视角」：真实网络里的 128 维顺序是 SGD 自己定的，
+          同 token 的理想向量与真实向量余弦相似度只有 <b>0.025</b>（几乎正交）。真实数据长什么样，见下面这张。
+        </div>
+        <div class="canvas-wrap">
+          <canvas id="realDimsCanvas" width="1400" height="444"></canvas>
+          <div class="rev-icons">
+            <button id="simA2" class="rev-icon" type="button" disabled
+              title="用真实 W_E 里那几个频率，把 emb(a) 逆变换回 token 轴（看看波峰落在哪里）；再点一下收起">🌀 a</button>
+            <button id="simB2" class="rev-icon" type="button" disabled
+              title="用真实 W_E 里那几个频率，把 emb(b) 逆变换回 token 轴（看看波峰落在哪里）；再点一下收起">🌀 b</button>
+          </div>
+        </div>
+        <div class="rev-note warn">
+          <b>所以「直接用真实数据画」是这样的：</b>少数几维是大值、其余都在 0 附近，
+          单看向量（上面两条带子）看不出任何周期结构。要把结构挖出来必须做一步 DFT：
+          下面的热图把同一块 <code>W_E</code> 拆到 6 个关键频率上，亮起来的那几列就是网络真正在用的维度；
+          实测 128 维里只有 <b>38</b> 维由单一频率主导，每一维其实是 <b id="kCount">?</b> 个关键频率
+          （k = <span id="kList">?</span>）的学出来的稀疏组合——最好的那几维能复现 96–98.6%，最差的只有 33% 左右。
+        </div>
+        <div id="realSeedNote" style="font-size:.84rem;color:#8b97b5;margin:10px 0 0;">
+          <span class="rev-tag real">真实权重</span>
+          <span id="realEmbedNote">…</span>
+        </div>
+        <canvas id="realEmbedCanvas" width="1400" height="500"></canvas>
+        <div class="rev-note ok">
+          <b>逆向工程的结论：</b>嵌入矩阵每一列 <code>W_E[·, c]</code> 沿 token 轴几乎就是
+          <strong>若干个 cos/sin 波的叠加</strong>——上面浅蓝是真实取值，橙色是只用那几个频率重建出来的结果，
+          复现了 <b id="weShare">?</b>。这就是「模型把数字搬到了频域」的直接证据。
+        </div>
+        <div class="rev-note">
+          拖动 a：注意橙色波上那个白点——<b>a 变的不是「数值」，而是它落在这些波上的相位</b>。
+          换成不同维度 c，「波」的频率组合会变，但仍落在同一批关键频率上（下拉可换）。
+          <label style="margin-left:8px;color:#7885a5;">看的维度 c =</label>
+          <select id="dimSel" style="background:#0a0d16;color:#dfe3ea;border:1px solid #2a3454;border-radius:6px;font-size:12px;"></select>
+        </div>
+      </div>
+    </div>
+
+    <!-- 4 -->
+    <div class="step">
+      <div class="step-marker"><span>4</span></div>
+      <div class="step-card">
+        <h2>注意力层 + MLP：旋转相乘 = 角度相加</h2>
+        <p class="desc">
+          用三角恒等式把 a 的旋转与 b 的旋转「相乘」，结果就是 (a+b) 的旋转——<strong>模加法在频域里变成了角度相加</strong>。
+        </p>
+        <canvas id="rotationCanvas" width="1400" height="520"></canvas>
+        <div class="formula">
+          cos(θᵃ)cos(θᵇ) − sin(θᵃ)sin(θᵇ) = <span class="hl2">cos(θᵃ + θᵇ)</span><br />
+          sin(θᵃ)cos(θᵇ) + cos(θᵃ)sin(θᵇ) = <span class="hl2">sin(θᵃ + θᵇ)</span>
+        </div>
+        <div class="rev-note">
+          <b>为什么「模」是免费的：</b>θ 是圆上的角度，(a+b) 转过一整圈后自动回到同一个相位——
+          多转的 P 圈被角度本身「取模」掉了，不需要额外操作。
+        </div>
+        <div class="rev-note ok">
+          <b>真实权重：</b>网络只对第 3 步里那几个关键频率做这件事（<span id="realRotNote">…</span>），
+          其余频率上权重几乎为零，所以是「稀疏傅里叶电路」。MLP 的作用是平方/相乘这些分量
+          （ReLU 让负数部分归零），从而造出 2k、a±b 这些交叉项。
+        </div>
+      </div>
+    </div>
+
+    <!-- 5 -->
+    <div class="step">
+      <div class="step-marker"><span>5</span></div>
+      <div class="step-card">
+        <h2>读出端：给 113 个候选答案打分</h2>
+        <p class="desc">
+          理想化的打分公式是「把误差 (a+b−c) 在 K 个频率上做余弦求和」：
+        </p>
+        <div class="formula">
+          score(c) = Σ<sub>k=1…K</sub> cos( 2πk(a + b − c) / P )
+        </div>
+        <p class="desc" style="margin-top:8px;">
+          c 正好等于 (a+b) mod P 时每项都是 1、总和最大；c 不对时各项正负相消、接近 0。
+        </p>
+        <canvas id="scoresCanvas" width="1400" height="440"></canvas>
+        <div class="rev-cmp">
+          <div>
+            <h3>理想化 <span class="rev-tag ideal">课本版</span></h3>
+            <div class="kv">K = 全部 ⌊P/2⌋ = 56 个频率，幅度全为 1</div>
+            <div class="kv">答案位得分 <b id="idealPeak">—</b>，其余位置最大 <b id="idealOther">—</b></div>
+            <div class="kv">对比度（峰 − 次峰）<b id="idealGap">—</b></div>
+          </div>
+          <div>
+            <h3>真实模型 <span class="rev-tag real">现算</span></h3>
+            <div class="kv">只用了 <b id="realK">?</b> 个频率（幅度、相位都是学出来的）</div>
+            <div class="kv">答案位 logit <b id="realPeak">—</b>，次高类 <b id="realOther">—</b></div>
+            <div class="kv">margin（正确 − 次高）<b id="realGap">—</b></div>
+            <div class="kv">Top-5：<span id="realTop5">—</span></div>
+          </div>
+        </div>
+        <div class="rev-note">
+          <b>怎么读这两张图：</b>理想版是「均匀 56 个频率」的样子，峰值很尖但波纹也大；
+          真实模型的 logits 由少数几个频率决定，因此单个类的 logit 随 b 摆得厉害（见 <a href="/model.html" style="color:#8fe3f2">模型可视化页</a> 的
+          「📊 LOGITS 频率」面板），<strong>但每一步的 argmax 都是对的</strong>——判对判错只看同一输入下 113 个类之间谁高。
+        </div>
+      </div>
+    </div>
+
+    <!-- 6 -->
+    <div class="step">
+      <div class="step-marker"><span>6</span></div>
+      <div class="step-card">
+        <h2>Argmax：回到一个具体的数字</h2>
+        <p class="desc">取分数最高的候选作为预测。整条链的意义：模型没有在时域里「学会加法」，而是把数字搬到频域、在频域做旋转乘法，再读回一个候选。</p>
+        <div class="num-display">
+          <div class="num-box green" style="font-size:1.25rem;min-width:170px;">真值 = <span id="finalAns">42</span></div>
+          <div class="num-box" id="finalPredBox" style="font-size:1.25rem;min-width:190px;">预测 = <span id="finalPred">—</span></div>
+        </div>
+        <div class="rev-note" id="finalNote">…</div>
+      </div>
+    </div>
+
+  </div>
+
+  <p class="rev-foot">
+    本页所有「真实权重」数值都由浏览器现算：权重快照来自 <code>viz-data/</code>（训练时导出），
+    前向传播与 <code>python/grokking/model.py</code> 的 <code>forward_full()</code> 一致。
+    想看更多（训练曲线、loss spike、各 seed 对比、结构图、频率面板）请去
+    <a href="/model.html">🧬 模型可视化</a>。
+  </p>
+</div>
+
+<script src="/js/reverse.js" defer></script>
+</body>
+</html>

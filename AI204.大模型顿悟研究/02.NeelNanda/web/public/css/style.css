@@ -68,6 +68,13 @@ nav.main a.btn {
   box-shadow: 0 2px 6px rgba(139,47,47,.25);
 }
 nav.main a.btn:hover { background: #a63b3b; color: #fff; }
+nav.main a.btn.ghost {
+  background: #fff;
+  color: var(--accent);
+  border: 1px solid #e6cfcb;
+  box-shadow: none;
+}
+nav.main a.btn.ghost:hover { background: var(--accent-soft); color: var(--accent); }
 
 .wrap { max-width: 1080px; margin: 0 auto; padding: 28px 20px 80px; }
 
