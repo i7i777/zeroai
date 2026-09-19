@@ -74,11 +74,26 @@
     }
     .add-tip b { color: #8fe3f2; }
     /* 准确率曲线卡片（与结构图同为深色卡片，放在最上面） */
-    .acc-card { background: #0e1016; color: #dfe3ea; border-radius: 14px; padding: 16px; margin-bottom: 22px; }    .acc-card h2 { color: #fff; border: none; margin: 0 0 10px; font-size: 17px; }
+    .acc-card { background: #0e1016; color: #dfe3ea; border-radius: 14px; padding: 16px; margin-bottom: 22px; position: relative; }
+    .acc-card h2 { color: #fff; border: none; margin: 0 0 10px; font-size: 17px; padding-right: 40px; }
     .acc-card canvas { display: block; width: 100%; height: auto; border-radius: 8px; touch-action: none; cursor: crosshair; }
     .acc-legend { display: flex; flex-wrap: wrap; gap: 5px 20px; margin-top: 10px; font-size: 12.5px; color: #9aa3b2; }
     .acc-legend b { color: #dfe3ea; }
     .acc-note { font-size: 12px; color: #8a93a5; margin-top: 8px; line-height: 1.7; }
+    /* 卡片右上角的「全屏」按钮（点击后整张卡片铺满屏幕，再点 / Esc 退出） */
+    .fs-btn { position: absolute; top: 12px; right: 12px; z-index: 5; width: 30px; height: 30px; padding: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: #141a26; color: #9fb0c8; border: 1px solid #2a3454; border-radius: 8px;
+      font-size: 14px; line-height: 1; cursor: pointer;
+      transition: background .15s, color .15s, border-color .15s; }
+    .fs-btn:hover { background: #1e2a3d; color: #8fe3f2; border-color: #3a5480; }
+    /* 全屏态（:fullscreen 走 Fullscreen API；.fs-fallback 是不支持时的退化方案） */
+    .acc-card:fullscreen, .acc-card.fs-fallback { display: flex; flex-direction: column; }
+    .acc-card:fullscreen { padding: 18px 22px; border-radius: 0; }
+    .acc-card.fs-fallback { position: fixed; inset: 0; z-index: 9999; margin: 0; padding: 18px 22px;
+      border-radius: 0; overflow: auto; box-shadow: 0 0 0 100vmax rgba(0,0,0,.6); }
+    .acc-card:fullscreen .acc-legend, .acc-card.fs-fallback .acc-legend { margin-top: 8px; }
+    .acc-card:fullscreen .acc-note, .acc-card.fs-fallback .acc-note { margin-top: 6px; }
     .sw { display: inline-block; width: 16px; height: 3px; border-radius: 2px; vertical-align: 3px; margin-right: 6px; }
     .arch-card { background: #0e1016; color: #dfe3ea; border-radius: 14px; padding: 16px; overflow-x: auto; margin-bottom: 22px; }    .arch-card h2 { color: #fff; border: none; margin: 0 0 6px; font-size: 17px; }
     .arch-card svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
@@ -128,6 +143,28 @@
     .sweep-result .kv b { color: #dfe3ea; font-size: 13.5px; }
     .sweep-result canvas { width: 100%; height: auto; background: #fff; border: 1px solid #262b36; border-radius: 6px; margin-top: 8px; }
     .sweep-result select { font-size: 12.5px; padding: 2px 6px; background: #0e1016; color: #dfe3ea; border: 1px solid #2c3a52; border-radius: 6px; }
+    /* 频率面板右上角的「i」：打开「时域 → 频域」基础教程弹层 */
+    .info-btn { margin-left: auto; flex: 0 0 auto; width: 26px; height: 26px; padding: 0;
+      display: inline-flex; align-items: center; justify-content: center;
+      background: #141a26; color: #9fb0c8; border: 1px solid #2a3454; border-radius: 50%;
+      font-family: Georgia, "Times New Roman", serif; font-style: italic; font-size: 14px; font-weight: 700;
+      line-height: 1; cursor: pointer; transition: background .15s, color .15s, border-color .15s; }
+    .info-btn:hover { background: #1e2a3d; color: #8fe3f2; border-color: #3a5480; }
+    .info-modal { position: fixed; inset: 0; z-index: 10000; display: flex; align-items: center; justify-content: center;
+      background: rgba(4,6,12,.72); padding: 24px; }
+    .info-modal[hidden] { display: none; }
+    .info-modal-box { display: flex; flex-direction: column; width: min(1080px, 96vw); height: min(880px, 92vh);
+      background: #0b0e18; border: 1px solid #26304d; border-radius: 14px; overflow: hidden;
+      box-shadow: 0 24px 70px rgba(0,0,0,.6); }
+    .info-modal-head { display: flex; align-items: center; gap: 12px; padding: 9px 12px 9px 16px;
+      background: #10141f; border-bottom: 1px solid #1d2335; font-size: 13.5px; }
+    .info-modal-head b { color: #dfe3ea; }
+    .info-modal-hint { color: #6d7a9e; font-size: 12px; }
+    .info-modal-close { margin-left: auto; width: 28px; height: 28px; padding: 0; cursor: pointer;
+      background: #141a26; color: #9fb0c8; border: 1px solid #2a3454; border-radius: 8px; font-size: 13px;
+      transition: background .15s, color .15s, border-color .15s; }
+    .info-modal-close:hover { background: #1e2a3d; color: #ff9f9f; border-color: #3a5480; }
+    .info-modal-box iframe { flex: 1 1 auto; width: 100%; border: 0; background: #0b0e18; }
 
     .spin { display: inline-block; width: 14px; height: 14px; border: 2px solid #ccc; border-top-color: var(--accent); border-radius: 50%; animation: rot .8s linear infinite; vertical-align: -2px; }
     @keyframes rot { to { transform: rotate(360deg); } }
@@ -199,8 +236,9 @@
   </section>
 
   <!-- 1) 选中 seed 的准确率曲线 -->
-  <section class="acc-card">
+  <section class="acc-card" id="accCard" data-fs="acc">
     <h2>① 准确率曲线（当前选中的实验 / seed）</h2>
+    <button class="fs-btn" type="button" data-fs-btn title="全屏 / 退出全屏（Esc）" aria-label="全屏">⛶</button>
     <canvas id="cAcc" width="1100" height="260"></canvas>
     <div class="acc-legend" id="accLegend">—</div>
     <div class="acc-note">
@@ -247,19 +285,33 @@
     <div class="sweep-result" id="freqResult" hidden>
       <div class="row">
         <span class="kv"><b id="freqTitle" style="color:#dfe3ea;">—</b></span>
-        <span class="kv"><span id="freqSelLabel">维度</span> <select id="freqSel" title="选择要查看的维度 / 输出类"></select></span>
+        <span class="kv"><span id="freqSelLabel">维度</span> <select id="freqSel" title="选择要查看的维度 / 输出类 / token"></select></span>
         <span class="kv">保留频率数 N <select id="freqTop" title="只用幅度最大的前 N 个频率重建"></select></span>
         <span class="kv">阶段 <span class="chip-mini" id="freqStage">—</span></span>
+        <button class="info-btn" id="freqInfoBtn" type="button" title="看不懂时域 / 频域？先看这个（3 分钟基础直觉）" aria-label="时域 → 频域 基础教程">i</button>
+      </div>
+      <div id="embedDftWrap" hidden>
+        <div id="freqCap0" style="margin:6px 0 2px; font-size:12px; color:#9aa3b2;"></div>
+        <canvas id="cEmbedDft" width="1100" height="330"></canvas>
+        <div id="edDftNote" style="font-size:12px;color:#8a93a5;margin-top:6px;"></div>
       </div>
       <div id="freqCap1" style="margin:6px 0 2px; font-size:12px; color:#9aa3b2;"></div>
       <canvas id="cEmbedWave" width="1100" height="300"></canvas>
       <div id="edWaveNote" style="font-size:12px;color:#8a93a5;margin-top:6px;"></div>
+      <div id="embedSplitWrap" hidden>
+        <div id="freqCap1b" style="margin:14px 0 2px; font-size:12px; color:#9aa3b2;"></div>
+        <canvas id="cEmbedSplit" width="1100" height="260"></canvas>
+        <div id="edSplitNote" style="font-size:12px;color:#8a93a5;margin-top:6px;"></div>
+      </div>
       <div id="freqCap2" style="margin:14px 0 2px; font-size:12px; color:#9aa3b2;"></div>
       <canvas id="cEmbedSpec" width="1100" height="220"></canvas>
       <div id="edSpecNote" style="font-size:12px;color:#8a93a5;margin-top:6px;"></div>
       <div id="freqCap3" style="margin:14px 0 2px; font-size:12px; color:#9aa3b2;"></div>
       <canvas id="cEmbedParts" width="1100" height="660"></canvas>
       <div id="edPartsNote" style="font-size:12px;color:#8a93a5;margin-top:6px;"></div>
+      <div id="freqCap4" style="margin:14px 0 2px; font-size:12px; color:#9aa3b2;"></div>
+      <canvas id="cEmbedInv" width="1100" height="360"></canvas>
+      <div id="edInvNote" style="font-size:12px;color:#8a93a5;margin-top:6px;"></div>
     </div>
   </section>
 
@@ -272,6 +324,17 @@
   </div>
 </footer>
 <button id="toTop" aria-label="回到顶部">↑</button>
+<!-- 「时域 → 频域」基础教程弹层（iframe 加载，避免与主页面样式打架） -->
+<div class="info-modal" id="infoModal" hidden>
+  <div class="info-modal-box" role="dialog" aria-modal="true" aria-label="时域 → 频域：从基础直觉讲起">
+    <div class="info-modal-head">
+      <b>时域 → 频域：从基础直觉讲起</b>
+      <span class="info-modal-hint">拖动页面里的「数字 a」滑块，看每一步怎么变</span>
+      <button class="info-modal-close" id="infoClose" type="button" title="关闭（Esc）" aria-label="关闭">✕</button>
+    </div>
+    <iframe id="infoFrame" title="时域 → 频域：从基础直觉讲起" src="about:blank"></iframe>
+  </div>
+</div>
 <script src="/js/main.js"></script>
 <script src="/js/model.js"></script>
 </body>

@@ -144,6 +144,12 @@
   // ===================================================================
   // 网络结构 SVG（类似论文/示意图风格）
   // ===================================================================
+  /** 还没跑过测试时，结构图里默认展示的那一对输入 (a, b)
+   *  （EMBED 视图的默认 token 也要用它，两处必须一致） */
+  function defaultSampleAB(p) {
+    return { a: Math.max(1, Math.floor(p * 0.33)), b: Math.max(1, Math.floor(p * 0.62)) };
+  }
+
   function buildArch(cfg, sample) {
     const svg = $("#archSvg");
     const p = cfg ? cfg.p : 113;
@@ -193,8 +199,9 @@
     // 1) 输入：3 个 one-hot token（位置 a、b、=），并标出 a、b 代表的数值
     const NTOK = p + 1;                         // 词表：0..112 与 '='
     const hasS = !!sample;
-    const aVal = hasS ? sample.a : Math.max(1, Math.floor(p * 0.33));
-    const bVal = hasS ? sample.b : Math.max(1, Math.floor(p * 0.62));
+    const dflt = defaultSampleAB(p);
+    const aVal = hasS ? sample.a : dflt.a;
+    const bVal = hasS ? sample.b : dflt.b;
     const tokVals = [aVal, bVal, p];            // 第三列为 '=' token
     const tokTags = [
       hasS ? `位置1 · a=${aVal}  ●测试` : `位置1 · a=${aVal}`,
@@ -512,15 +519,76 @@
                     (isTrainCell(sp, a, b) ? "训练集" : "留出（测试）");
   }
 
+  // ===================================================================
+  // 卡片全屏：右上角 ⛶ 点一下把整张卡片铺满屏幕（Fullscreen API，退化用 class）
+  // ===================================================================
+  /** 卡片是否处于全屏态 */
+  function cardIsFull(name) {
+    const el = document.querySelector(`[data-fs="${name}"]`);
+    if (!el) return false;
+    return document.fullscreenElement === el || el.classList.contains("fs-fallback");
+  }
+
+  /** 各卡片进/退全屏后的重画钩子（以后想让别的卡片也能全屏，在这里补一条） */
+  const FS_REDRAW = { acc: () => drawAcc() };
+
+  /** 图标跟着状态变：全屏时显示 ✕ */
+  function syncFsBtns() {
+    for (const btn of document.querySelectorAll("[data-fs-btn]")) {
+      const card = btn.closest("[data-fs]");
+      const on = card ? cardIsFull(card.dataset.fs) : false;
+      btn.textContent = on ? "✕" : "⛶";
+      btn.title = on ? "退出全屏（Esc）" : "全屏";
+      btn.setAttribute("aria-label", on ? "退出全屏" : "全屏");
+    }
+  }
+
+  async function toggleCardFullscreen(card) {
+    const name = card.dataset.fs;
+    const active = document.fullscreenElement === card || card.classList.contains("fs-fallback");
+    if (active) {
+      if (document.fullscreenElement === card) {
+        try { await document.exitFullscreen(); } catch (err) { /* 忽略：状态由 fullscreenchange 收尾 */ }
+      }
+      card.classList.remove("fs-fallback");
+    } else {
+      let ok = false;
+      if (card.requestFullscreen) ok = await card.requestFullscreen().then(() => true).catch(() => false);
+      if (!ok) card.classList.add("fs-fallback");       // 不支持 / 被拒绝时的退化方案
+    }
+    syncFsBtns();
+    if (FS_REDRAW[name]) FS_REDRAW[name]();
+  }
+
   // -------------------------------------------------------------------
   // 选中 seed 的准确率曲线（训练 / 测试），标出顿悟点与当前 epoch
   // -------------------------------------------------------------------
   function drawAcc() {
     const cv = $("#cAcc");
     if (!cv) return;
-    const W = 1100, H = 260;
-    cv.width = W; cv.height = H;
+    // 全屏时换一套更大的设计尺寸：量出卡片里除画布外的占用，让画布吃掉剩下的空间
+    const full = cardIsFull("acc");
+    let W = 1100, H = 260, dpr = 1;
+    if (full) {
+      const card = $("#accCard");
+      const cs = getComputedStyle(card);
+      const padY = parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom);
+      let others = 0;                                     // 标题 / 图例 / 说明 + 各自的外边距
+      for (const el of card.children) {
+        if (el.tagName === "CANVAS" || el.matches("[data-fs-btn]")) continue;
+        const r = el.getBoundingClientRect();
+        if (!r.height) continue;
+        const s = getComputedStyle(el);
+        others += r.height + parseFloat(s.marginTop) + parseFloat(s.marginBottom);
+      }
+      W = Math.max(880, Math.round(cv.clientWidth || card.clientWidth));
+      H = Math.max(300, Math.round(card.clientHeight - padY - others));
+      dpr = Math.min(2, Math.max(1.5, window.devicePixelRatio || 1));
+    }
+    // 缓冲区按设备像素比放大，避免全屏时被拉糊；绘图坐标仍用设计尺寸
+    cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr);
     const ctx = cv.getContext("2d");
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     const L = 62, R = 26, T = 18, B = 34;
     ctx.clearRect(0, 0, W, H);
     ctx.fillStyle = "#11141d"; ctx.fillRect(0, 0, W, H);
@@ -1596,6 +1664,783 @@
   }
 
   // ===================================================================
+  // EMBED 视图：① emb(a) 本体（128 维向量）
+  //             ② 这个向量由哪些频率 k 组成
+  //             ③ 只用这些频率逆变换回 token 轴 → 复原 one-hot(a)
+  //   数学基础（沿 token 轴对每一维做 DFT，恒等变形）：
+  //     W_E[a, c] = DC[c] + Σ_k [ cos(2πka/P)·A_k[c] + sin(2πka/P)·B_k[c] ]
+  //   A_k / B_k 是长度 d 的“方向向量”（下标 = 维度 c），k = 1…⌊P/2⌋。
+  // ===================================================================
+  let weBasisCache = { key: null };
+
+  /** 计算并缓存上式的 DC / A_k / B_k（换 run/seed/epoch 才重算） */
+  function embedBasis(p, d) {
+    const key = `${state.run}|${state.seed}|${state.loadedEpoch}|${p}|${d}`;
+    if (weBasisCache.key === key) return weBasisCache;
+    const te = state.mats["token_embed"];            // [p+1, d]，行 = token
+    const K = Math.floor(p / 2);
+    const ct = new Float64Array(p), sn = new Float64Array(p);
+    const A = [], B = [];
+    for (let k = 1; k <= K; k++) {
+      for (let a = 0; a < p; a++) { const th = (2 * Math.PI * k * a) / p; ct[a] = Math.cos(th); sn[a] = Math.sin(th); }
+      const Ak = new Float64Array(d), Bk = new Float64Array(d);
+      for (let c = 0; c < d; c++) {
+        let sa = 0, sb = 0;
+        for (let a = 0; a < p; a++) { const v = te.data[a * d + c]; sa += v * ct[a]; sb += v * sn[a]; }
+        Ak[c] = (2 * sa) / p; Bk[c] = (2 * sb) / p;
+      }
+      A.push(Ak); B.push(Bk);
+    }
+    const DC = new Float64Array(d);
+    for (let c = 0; c < d; c++) {
+      let s = 0;
+      for (let a = 0; a < p; a++) s += te.data[a * d + c];
+      DC[c] = s / p;
+    }
+
+    // ---- 逆变换用：对基矩阵做 QR 分解（列 = DC, A_1, B_1, A_2, B_2, …，共 nb = 2K+1 = 113 列）----
+    // 有了 Q、R，就能从 emb(a) 的 d 个数解出 nb 个频率系数 x = [1, cosθ_1, sinθ_1, …]：
+    //     x = R⁻¹ · (Qᵀ · w)        （这就是「逆变换」的第一步）
+    // 用修正 Gram-Schmidt（比正规方程 Bm·Bmᵀ 稳定得多：后者会把条件数平方到 1.4e10）
+    const nb = 2 * K + 1;
+    const bcols = [DC];
+    for (let k = 0; k < K; k++) { bcols.push(A[k]); bcols.push(B[k]); }
+    const Qc = [], Rm = new Float64Array(nb * nb);
+    for (let j = 0; j < nb; j++) {
+      const v = Float64Array.from(bcols[j]);
+      for (let i = 0; i < j; i++) {
+        const q = Qc[i];
+        let s = 0;
+        for (let t = 0; t < d; t++) s += q[t] * v[t];
+        Rm[i * nb + j] = s;
+        for (let t = 0; t < d; t++) v[t] -= s * q[t];
+      }
+      let nrm = 0;
+      for (let t = 0; t < d; t++) nrm += v[t] * v[t];
+      nrm = Math.sqrt(nrm);
+      Rm[j * nb + j] = nrm;
+      const q = new Float64Array(d);
+      if (nrm > 1e-300) for (let t = 0; t < d; t++) q[t] = v[t] / nrm;
+      Qc.push(q);
+    }
+
+    weBasisCache = { key, A, B, DC, K, p, d, Qc, Rm, nb };
+    return weBasisCache;
+  }
+
+  /** 真实逆变换第 1 步：把 emb(a) 的 d 个数解成 nb 个频率系数（x[0] 应 ≈ 1，x[2k−1]/x[2k] 应 ≈ cos/sin θ_k） */
+  function embedCoeffs(bs, w) {
+    const { Qc, Rm, nb } = bs;
+    const u = new Float64Array(nb);
+    for (let j = 0; j < nb; j++) {
+      const q = Qc[j];
+      let s = 0;
+      for (let t = 0; t < w.length; t++) s += q[t] * w[t];
+      u[j] = s;
+    }
+    const x = new Float64Array(nb);
+    for (let j = nb - 1; j >= 0; j--) {
+      let s = u[j];
+      for (let i = j + 1; i < nb; i++) s -= Rm[j * nb + i] * x[i];
+      const dg = Rm[j * nb + j];
+      x[j] = Math.abs(dg) > 1e-300 ? s / dg : 0;
+    }
+    return x;
+  }
+
+  /** ① emb(a) 本体：横轴 = 维度下标 1…d，纵轴 = 数值（琥珀 = 正，天蓝 = 负）
+   *  底部色带 = 每个维度的“主导频率”（该维振幅最大的 k），用来标出关键频率落在哪些维度上 */
+  function drawEmbedVector(canvas, d, a, vec, bs) {
+    const W = 1100, H = 362;
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
+    const L = 78, R = 18, T = 30, B = 100;
+    const pw = W - L - R, ph = H - T - B;
+    let vmax = 0, vmin = 0, iMax = 0;
+    for (let c = 0; c < d; c++) {
+      if (vec[c] > vmax) { vmax = vec[c]; iMax = c; }
+      if (vec[c] < vmin) vmin = vec[c];
+    }
+    const m = Math.max(vmax, -vmin, 1e-12);
+    const mid = T + ph / 2;
+    const Y = (v) => mid - ((ph / 2) * 0.92 * v) / m;
+    const bw = pw / d;
+    const X = (c) => L + c * bw;
+    const fmt = (v) => (v === 0 ? "0" : Math.abs(v) < 0.01 ? v.toExponential(1) : v.toFixed(3));
+
+    // ---- 每个维度的主导频率：amp_k[c] = √(A_k[c]² + B_k[c]²)，取最大的 k ----
+    const K = bs.K;
+    const ampK = [];
+    for (let k = 0; k < K; k++) {
+      const Ak = bs.A[k], Bk = bs.B[k], arr = new Float64Array(d);
+      for (let c = 0; c < d; c++) arr[c] = Math.hypot(Ak[c], Bk[c]);
+      ampK.push(arr);
+    }
+    const totE = new Float64Array(d);
+    for (let k = 0; k < K; k++) { const arr = ampK[k]; for (let c = 0; c < d; c++) totE[c] += arr[c] * arr[c]; }
+    const dom = new Int32Array(d), domShare = new Float64Array(d);
+    const cnt = new Map();
+    for (let c = 0; c < d; c++) {
+      let bk = 1, bv = -1;
+      for (let k = 0; k < K; k++) { const v = ampK[k][c]; if (v > bv) { bv = v; bk = k + 1; } }
+      dom[c] = bk; domShare[c] = totE[c] > 0 ? (bv * bv) / totE[c] : 0;
+      cnt.set(bk, (cnt.get(bk) || 0) + 1);
+    }
+    const ranked = [...cnt.entries()].sort((x, z) => z[1] - x[1] || x[0] - z[0]);
+    const PAL = ["#c1440e", "#2e8b66", "#7b5bd6"], OTHER = "#cfd6e2";
+    const domColor = new Map();
+    ranked.slice(0, 3).forEach(([k], i) => domColor.set(k, PAL[i]));
+
+    // 网格 + 0 基线
+    ctx.strokeStyle = "#eef0f4"; ctx.lineWidth = 1;
+    for (let g = 0; g <= 4; g++) {
+      const gy = T + (ph * g) / 4;
+      ctx.beginPath(); ctx.moveTo(L, gy); ctx.lineTo(W - R, gy); ctx.stroke();
+    }
+    ctx.strokeStyle = "#c9ced7"; ctx.setLineDash([4, 4]);
+    ctx.beginPath(); ctx.moveTo(L, Y(0)); ctx.lineTo(W - R, Y(0)); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif"; ctx.textAlign = "right";
+    ctx.fillText(`+${fmt(m)}`, L - 8, Y(m) + 4);
+    ctx.fillText("0", L - 8, Y(0) + 4);
+    ctx.fillText(`−${fmt(m)}`, L - 8, Y(-m) + 4);
+
+    // 柱子：emb(a) 的每个分量
+    for (let c = 0; c < d; c++) {
+      const v = vec[c];
+      const y0 = Y(0), y1 = Y(v);
+      ctx.fillStyle = v >= 0 ? "#d98a1f" : "#4d8fd6";
+      ctx.fillRect(X(c) + 0.6, Math.min(y0, y1), Math.max(bw - 1.2, 0.8), Math.max(Math.abs(y1 - y0), 1));
+    }
+
+    // ---- 色带：每一格 = 该维度的主导频率 ----
+    const ry = T + ph + 10, rh = 11;
+    for (let c = 0; c < d; c++) {
+      ctx.fillStyle = domColor.get(dom[c]) || OTHER;
+      ctx.fillRect(X(c) + 0.4, ry, Math.max(bw - 0.8, 0.9), rh);
+    }
+    ctx.fillStyle = "#8a93a5"; ctx.font = "10.5px sans-serif"; ctx.textAlign = "right";
+    ctx.fillText("主导频率", L - 6, ry + rh - 1.5);
+
+    // ---- 标记：前 3 个主导频率各自振幅最大的那个维度 ----
+    const marks = ranked.slice(0, 3)
+      .filter(([, n]) => n >= 3)
+      .map(([k], i) => {
+        let bc = 0, bv = -1;
+        for (let c = 0; c < d; c++) { const v = ampK[k - 1][c]; if (v > bv) { bv = v; bc = c; } }
+        return { k, c: bc, col: PAL[i], amp: bv };
+      });
+    for (const mk of marks) {
+      const xc = X(mk.c) + bw / 2;
+      ctx.fillStyle = mk.col;
+      ctx.beginPath();
+      ctx.moveTo(xc, ry - 2); ctx.lineTo(xc - 5, ry - 10); ctx.lineTo(xc + 5, ry - 10);
+      ctx.closePath(); ctx.fill();
+      const label = `k=${mk.k}`;
+      ctx.font = "bold 10.5px monospace";
+      const lw = ctx.measureText(label).width;
+      let lx = Math.max(L + lw / 2 + 2, Math.min(W - R - lw / 2 - 2, xc));
+      ctx.fillStyle = "#ffffff";
+      ctx.fillRect(lx - lw / 2 - 3, ry - 27, lw + 6, 14);
+      ctx.fillStyle = mk.col; ctx.textAlign = "center";
+      ctx.fillText(label, lx, ry - 16);
+    }
+
+    ctx.textAlign = "left"; ctx.fillStyle = "#2a2f3a"; ctx.font = "bold 12px sans-serif";
+    ctx.fillText(`emb(a = ${a}) 本体：W_E[${a}, :]，全部 ${d} 维 · 琥珀 = 正 / 天蓝 = 负`, L, 17);
+    ctx.textAlign = "right"; ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif";
+    ctx.fillText(`最大 |值| = ${fmt(m)}（dim ${iMax + 1}）· 柱子看不出周期，用色带看频率归属`, W - R, 17);
+
+    ctx.textAlign = "center"; ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif";
+    for (let c = 0; c < d; c += 16) {
+      const isLast = c + 16 >= d;
+      ctx.textAlign = isLast ? "right" : "center";
+      ctx.fillText(String(c + 1), isLast ? W - R : X(c) + bw / 2, T + ph + 46);
+    }
+
+    // ---- 图例 ----
+    ctx.textAlign = "left"; ctx.fillStyle = "#333"; ctx.font = "12px sans-serif";
+    ctx.fillText("色带 = 该维的主导频率（振幅最大的 k）：", L, H - 22);
+    let lx2 = L + 244;
+    const chip = (col, label) => {
+      ctx.fillStyle = col; ctx.fillRect(lx2, H - 32, 10, 10);
+      ctx.fillStyle = "#57606a"; ctx.font = "11.5px sans-serif"; ctx.textAlign = "left";
+      ctx.fillText(label, lx2 + 14, H - 23);
+      lx2 += 14 + ctx.measureText(label).width + 16;
+    };
+    let covered = 0;
+    for (const [k, n] of ranked.slice(0, 3)) { chip(domColor.get(k), `k=${k}（${n} 维）`); covered += n; }
+    chip(OTHER, `其它（${d - covered} 维）`);
+    ctx.textAlign = "right"; ctx.fillStyle = "#333"; ctx.font = "12px sans-serif";
+    ctx.fillText("维度下标 c（1…128）→", W - R, H - 8);
+
+    // 供文案使用的统计量：主导频率占该维能量的中位数、前 6 个频率合计占比中位数
+    const med = (arr) => { const s = Array.from(arr).sort((x, z) => x - z); return s[s.length >> 1] || 0; };
+    const t6 = new Float64Array(d);
+    for (const [k] of ranked.slice(0, 6)) {
+      const arr = ampK[k - 1];
+      for (let c = 0; c < d; c++) t6[c] += arr[c] * arr[c];
+    }
+    return {
+      ranked, covered, marks,
+      medShare: med(domShare),
+      medTop6: med(Array.from(t6, (v, c) => (totE[c] > 0 ? v / totE[c] : 0))),
+    };
+  }
+
+  /** ② 56 个频率各自长什么样：每条波 = cos(2πk(n−a)/P)，2 列 × 28 行
+   *  右侧数字 = 该频率在 emb(a) 里的真实强度 R（由权重算得） */
+  function drawEmbedWaves(canvas, p, a, K, amps) {
+    const W = 1100, nCols = 2, gx = 30, cellH = 27, topPad = 58, botPad = 26;
+    const nRows = Math.ceil(K / nCols);
+    const H = topPad + nRows * cellH + botPad;
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
+    const cw = (W - gx * (nCols - 1)) / nCols;
+    let amax = 1e-12;
+    for (let i = 0; i < K; i++) amax = Math.max(amax, amps[i]);
+    const padL = 46, padR = 66;
+
+    for (let i = 0; i < K; i++) {
+      const k = i + 1;
+      const ox = ((i / nRows) | 0) * (cw + gx);
+      const cy = topPad + ((i % nRows) | 0) * cellH + cellH / 2;
+      const px = ox + padL, pw = cw - padL - padR;
+      const X = (n) => px + (pw * n) / (p - 1);
+      const A = 9;
+      ctx.strokeStyle = "#eceff4"; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(px, cy); ctx.lineTo(px + pw, cy); ctx.stroke();
+      const hue = 205 + (i / Math.max(1, K - 1)) * 135;
+      ctx.strokeStyle = `hsl(${hue}, 72%, 50%)`; ctx.lineWidth = 1.4;
+      ctx.beginPath();
+      for (let n = 0; n < p; n++) {
+        const v = Math.cos((2 * Math.PI * k * (n - a)) / p);
+        const x = X(n), y = cy - v * A;
+        n ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.stroke();
+      ctx.fillStyle = "#57606a"; ctx.font = "10.5px monospace"; ctx.textAlign = "right";
+      ctx.fillText(`k=${k}`, px - 6, cy + 3.5);
+      const strong = amps[i] >= 0.2 * amax;
+      ctx.fillStyle = strong ? "#b0332f" : "#9aa3b2";
+      ctx.font = strong ? "bold 10.5px monospace" : "10.5px monospace";
+      ctx.textAlign = "left";
+      ctx.fillText(amps[i].toFixed(3), px + pw + 6, cy + 3.5);
+    }
+    // 每列一条 n = a 的绿虚线：所有波都在这里同相
+    for (let col = 0; col < nCols; col++) {
+      const ox = col * (cw + gx);
+      const px = ox + padL, pw = cw - padL - padR;
+      const xa = px + (pw * a) / (p - 1);
+      ctx.strokeStyle = "rgba(46,139,102,.75)"; ctx.setLineDash([4, 3]); ctx.lineWidth = 1.6;
+      ctx.beginPath(); ctx.moveTo(xa, topPad - 8); ctx.lineTo(xa, topPad + nRows * cellH); ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = "#8a93a5"; ctx.font = "10.5px monospace"; ctx.textAlign = "center";
+      ctx.fillText("n = 0", px, topPad + nRows * cellH + 14);
+      ctx.fillText(`n = a = ${a}`, xa, topPad - 14);
+      ctx.fillText(`n = ${p - 1}`, px + pw, topPad + nRows * cellH + 14);
+    }
+    ctx.textAlign = "left"; ctx.fillStyle = "#2a2f3a"; ctx.font = "bold 12px sans-serif";
+    ctx.fillText(`${K} 个频率各自的样子：每条波 = cos(2πk(n−a)/P)（113 步转 k 圈）`, 20, 18);
+    ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif";
+    ctx.fillText("右列 R = 该频率那一份的长度 ‖v_k‖（128 维模长，不是某一维的取值）· 绿虚线 = n = a：所有波在这里同相", 20, 33);
+  }
+
+  /** ③ 把频率叠加回 token 轴：J 个频率的和（J = 4 / 16 / 全部 56）→ 归一化后就是 one-hot(a) */
+  function drawEmbedSum(canvas, p, a, K) {
+    const W = 1100, H = 360;
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
+    const L = 76, R = 22, T = 58, B = 46;
+    const pw = W - L - R, ph = H - T - B;
+    const X = (n) => L + (pw * n) / (p - 1);
+    const vmin = -0.03, vmax = 1.06;
+    const Y = (v) => T + ph - (ph * (Math.max(vmin, Math.min(vmax, v)) - vmin)) / (vmax - vmin);
+    const sum = (J) => {
+      const out = new Float64Array(p);
+      for (let n = 0; n < p; n++) {
+        let s = 0;
+        for (let k = 1; k <= J; k++) s += Math.cos((2 * Math.PI * k * (n - a)) / p);
+        out[n] = (s + 0.5) / (J + 0.5);         // 归一化：峰高恒为 1；J = K 时正好是 one-hot
+      }
+      return out;
+    };
+
+    // 网格 + 0/1 刻度
+    ctx.strokeStyle = "#eef0f4"; ctx.lineWidth = 1;
+    for (const g of [0, 0.25, 0.5, 0.75, 1]) {
+      const gy = Y(g);
+      ctx.beginPath(); ctx.moveTo(L, gy); ctx.lineTo(W - R, gy); ctx.stroke();
+    }
+    ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif"; ctx.textAlign = "right";
+    for (const g of [0, 0.5, 1]) ctx.fillText(g.toFixed(1), L - 8, Y(g) + 4);
+
+    // one-hot 参考（灰柱）
+    const bw = pw / p;
+    for (let n = 0; n < p; n++) {
+      if (n !== a) continue;
+      ctx.fillStyle = "#c8d1e0";
+      ctx.fillRect(X(n) - bw / 2, Y(1), Math.max(bw, 3), Y(0) - Y(1));
+    }
+    // n = a 竖线
+    ctx.strokeStyle = "rgba(46,139,102,.8)"; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.moveTo(X(a), T - 26); ctx.lineTo(X(a), T + ph + 6); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#2e8b66"; ctx.font = "bold 12px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText(`n = a = ${a}`, X(a), T - 12);
+
+    // 三条曲线
+    const line = (arr, color, width) => {
+      ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
+      for (let n = 0; n < p; n++) { const x = X(n), y = Y(arr[n]); n ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+      ctx.stroke();
+    };
+    line(sum(4), "#f0b872", 1.6);
+    line(sum(16), "#e08b3a", 1.9);
+    line(sum(K), "#c1440e", 2.4);
+
+    // 标题 + 图例
+    ctx.textAlign = "left"; ctx.fillStyle = "#2a2f3a"; ctx.font = "bold 12px sans-serif";
+    ctx.fillText("把频率一条条叠回去（逆变换）", L, 18);
+    let lx = L + ctx.measureText("把频率一条条叠回去（逆变换）").width + 18;
+    const sw = (color, label, width) => {
+      ctx.strokeStyle = color; ctx.lineWidth = width;
+      ctx.beginPath(); ctx.moveTo(lx, 13); ctx.lineTo(lx + 20, 13); ctx.stroke();
+      ctx.fillStyle = "#57606a"; ctx.font = "11px sans-serif"; ctx.textAlign = "left";
+      ctx.fillText(label, lx + 25, 17);
+      lx += 25 + ctx.measureText(label).width + 14;
+    };
+    sw("#f0b872", "前 4 个频率", 1.6);
+    sw("#e08b3a", "前 16 个", 1.9);
+    sw("#c1440e", `全部 ${K} 个（= one-hot）`, 2.4);
+    ctx.fillStyle = "#c8d1e0"; ctx.fillRect(lx, 8, 8, 10);
+    ctx.fillStyle = "#57606a"; ctx.font = "11px sans-serif"; ctx.textAlign = "left";
+    ctx.fillText("one-hot(a) 参考", lx + 13, 17);
+
+    // x 轴
+    ctx.textAlign = "center"; ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif";
+    for (let n = 0; n < p; n += 16) {
+      const isLast = n + 16 >= p;
+      ctx.textAlign = isLast ? "right" : "center";
+      ctx.fillText(String(n), isLast ? W - R : X(n), T + ph + 16);
+    }
+    ctx.textAlign = "right"; ctx.fillStyle = "#333"; ctx.font = "12px sans-serif";
+    ctx.fillText("token n →", W - R, H - 8);
+  }
+
+  /** ④ 真实逆变换：真的用 emb(a) 的 128 个数算出整条曲线
+   *  红线 = 全 113 个系数（精确等于 one-hot(a)）；橙线 = 只保留最强 J 个频率（相位对，但旁瓣大） */
+  function drawEmbedInverse(canvas, p, a, K, yFull, yJ, J) {
+    const W = 1100, H = 366;
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
+    const L = 76, R = 22, T = 60, B = 48;
+    const pw = W - L - R, ph = H - T - B;
+    const X = (n) => L + (pw * n) / (p - 1);
+    const vmin = -0.22, vmax = 1.14;
+    const Y = (v) => T + ph - (ph * (Math.max(vmin, Math.min(vmax, v)) - vmin)) / (vmax - vmin);
+
+    // 网格 + 刻度
+    ctx.strokeStyle = "#eef0f4"; ctx.lineWidth = 1;
+    for (const g of [0, 0.25, 0.5, 0.75, 1]) {
+      ctx.beginPath(); ctx.moveTo(L, Y(g)); ctx.lineTo(W - R, Y(g)); ctx.stroke();
+    }
+    ctx.strokeStyle = "#dfe3ea"; ctx.setLineDash([3, 3]);
+    ctx.beginPath(); ctx.moveTo(L, Y(0)); ctx.lineTo(W - R, Y(0)); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif"; ctx.textAlign = "right";
+    for (const g of [0, 0.5, 1]) ctx.fillText(g.toFixed(1), L - 8, Y(g) + 4);
+
+    // one-hot(a) 参考柱
+    const bw = pw / p;
+    ctx.fillStyle = "#c8d1e0";
+    ctx.fillRect(X(a) - Math.max(bw, 3) / 2, Y(1), Math.max(bw, 3), Y(0) - Y(1));
+    // n = a 竖线
+    ctx.strokeStyle = "rgba(46,139,102,.8)"; ctx.setLineDash([5, 4]); ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.moveTo(X(a), T - 26); ctx.lineTo(X(a), T + ph + 6); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#2e8b66"; ctx.font = "bold 12px sans-serif"; ctx.textAlign = "center";
+    ctx.fillText(`n = a = ${a}`, X(a), T - 12);
+
+    const line = (arr, color, width) => {
+      ctx.strokeStyle = color; ctx.lineWidth = width; ctx.beginPath();
+      for (let n = 0; n < p; n++) { const x = X(n), y = Y(arr[n]); n ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+      ctx.stroke();
+    };
+    line(yJ, "#e08b3a", 1.9);
+    line(yFull, "#c1440e", 2.4);
+
+    // 标题 + 图例
+    ctx.textAlign = "left"; ctx.fillStyle = "#2a2f3a"; ctx.font = "bold 12px sans-serif";
+    const title = "④ 真实逆变换：直接拿 emb(a) 的 128 个数算出这条曲线";
+    ctx.fillText(title, L, 18);
+    ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif";
+    ctx.fillText("横轴 = 113 个 token n；纵轴 = 复原出来的「是 token n 吗」（灰柱 = 真值 one-hot(a)）", L, 34);
+    let lx = L + ctx.measureText("横轴 = 113 个 token n；纵轴 = 复原出来的「是 token n 吗」（灰柱 = 真值 one-hot(a)）").width + 16;
+    const sw = (color, label, width) => {
+      ctx.strokeStyle = color; ctx.lineWidth = width;
+      ctx.beginPath(); ctx.moveTo(lx, 30); ctx.lineTo(lx + 20, 30); ctx.stroke();
+      ctx.fillStyle = "#57606a"; ctx.font = "11px sans-serif"; ctx.textAlign = "left";
+      ctx.fillText(label, lx + 25, 34);
+      lx += 25 + ctx.measureText(label).width + 14;
+    };
+    sw("#c1440e", `全部 ${K} 个频率（精确 = one-hot）`, 2.4);
+    sw("#e08b3a", `只用最强 ${J} 个频率`, 1.9);
+
+    // x 轴
+    ctx.textAlign = "center"; ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif";
+    for (let n = 0; n < p; n += 16) {
+      const isLast = n + 16 >= p;
+      ctx.textAlign = isLast ? "right" : "center";
+      ctx.fillText(String(n), isLast ? W - R : X(n), T + ph + 16);
+    }
+    ctx.textAlign = "right"; ctx.fillStyle = "#333"; ctx.font = "12px sans-serif";
+    ctx.fillText("token n →", W - R, H - 8);
+  }
+
+  /** ⓿ 纯 DFT：one-hot(a) 的完整往返（与权重无关，只用到 a）
+   *  左上 (a) 时域 ──DFT──▶ 左下 (c) 幅度谱 / 右下 (d) 相位谱 ──逆DFT──▶ 右上 (b) 又回到时域 */
+  function drawEmbedDft(canvas, p, a, K) {
+    const W = 1100, H = 322;
+    canvas.width = W; canvas.height = H;
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, W, H);
+    const L = 78, R = 22, pw = W - L - R, gapX = 44, colW = (pw - gapX) / 2;
+    const xA = L, xB = L + colW + gapX;
+    const Rk = 2 / p, c0 = 1 / p;
+    const vmin = -0.16, vmax = 1.08;
+    const YT = (y0, h, v) => y0 + h - (h * (Math.max(vmin, Math.min(vmax, v)) - vmin)) / (vmax - vmin);
+
+    ctx.textAlign = "left"; ctx.fillStyle = "#2a2f3a"; ctx.font = "bold 12.5px sans-serif";
+    ctx.fillText("⓿ 纯 DFT：把 one-hot(a) 从时域变到频域，再用逆 DFT 变回来（全程与权重无关，只用到 a）", L, 18);
+    ctx.fillStyle = "#8a93a5"; ctx.font = "11px sans-serif";
+    ctx.fillText(`(a) 时域 ──DFT──▶ (c) 幅度谱 + (d) 相位谱 ──逆DFT──▶ (b) 又回到时域；` +
+      `进去 ${p} 个数，出来还是 ${p} 个数（1 个直流 + ${K} 对 cos/sin）`, L, 34);
+
+    // ============ (a) 左上：时域 ============
+    const yA = 58, hA = 86;
+    ctx.textAlign = "left"; ctx.fillStyle = "#2a2f3a"; ctx.font = "bold 12px sans-serif";
+    ctx.fillText(`(a) 时域：one-hot(a)`, xA, 52);
+    ctx.fillStyle = "#8a93a5"; ctx.font = "10.5px sans-serif";
+    ctx.fillText(`n = 0…${p - 1}`, xA + 118, 52);
+    ctx.strokeStyle = "#eef0f4"; ctx.lineWidth = 1;
+    for (const g of [0, 0.5, 1]) { ctx.beginPath(); ctx.moveTo(xA, YT(yA, hA, g)); ctx.lineTo(xA + colW, YT(yA, hA, g)); ctx.stroke(); }
+    ctx.fillStyle = "#8a93a5"; ctx.font = "10.5px sans-serif"; ctx.textAlign = "right";
+    ctx.fillText("1", xA - 6, YT(yA, hA, 1) + 4); ctx.fillText("0", xA - 6, YT(yA, hA, 0) + 4);
+    const bw1 = colW / p;
+    ctx.fillStyle = "#cfd6e2";
+    ctx.fillRect(xA, YT(yA, hA, 0.012), colW, yA + hA - YT(yA, hA, 0.012));
+    ctx.fillStyle = "#c1440e";
+    ctx.fillRect(xA + a * bw1 - Math.max(bw1, 3) / 2, YT(yA, hA, 1), Math.max(bw1, 3), yA + hA - YT(yA, hA, 1));
+    ctx.fillStyle = "#c1440e"; ctx.font = "bold 10.5px sans-serif"; ctx.textAlign = "left";
+    ctx.fillText(`n = a = ${a} → 1`, Math.min(xA + a * bw1 + 6, xA + colW - 74), yA + 14);
+
+    // ============ (b) 右上：逆 DFT 回来 ============
+    const yB = 58, hB = 86;
+    ctx.textAlign = "left"; ctx.fillStyle = "#2a2f3a"; ctx.font = "bold 12px sans-serif";
+    ctx.fillText(`(b) 逆 DFT 回来：又是 one-hot(a)`, xB, 52);
+    ctx.strokeStyle = "#eef0f4"; ctx.lineWidth = 1;
+    for (const g of [0, 0.5, 1]) { ctx.beginPath(); ctx.moveTo(xB, YT(yB, hB, g)); ctx.lineTo(xB + colW, YT(yB, hB, g)); ctx.stroke(); }
+    ctx.fillStyle = "#8a93a5"; ctx.font = "10.5px sans-serif"; ctx.textAlign = "right";
+    ctx.fillText("1", xB - 6, YT(yB, hB, 1) + 4); ctx.fillText("0", xB - 6, YT(yB, hB, 0) + 4);
+    ctx.fillStyle = "#cfd6e2";
+    ctx.fillRect(xB + a * bw1 - Math.max(bw1, 3) / 2, YT(yB, hB, 1), Math.max(bw1, 3), yB + hB - YT(yB, hB, 1));
+
+    // 频域系数（实 DFT）：a_k = (2/P)cos(2πka/P)，b_k = (2/P)sin(2πka/P)
+    const Ack = new Float64Array(K + 1), Bck = new Float64Array(K + 1);
+    for (let k = 1; k <= K; k++) {
+      const th = (2 * Math.PI * k * a) / p;
+      Ack[k] = (2 / p) * Math.cos(th);
+      Bck[k] = (2 / p) * Math.sin(th);
+    }
+    const invDft = (J) => {
+      const out = new Float64Array(p);
+      for (let n = 0; n < p; n++) {
+        let s = c0;
+        for (let k = 1; k <= J; k++) s += Ack[k] * Math.cos((2 * Math.PI * k * n) / p) + Bck[k] * Math.sin((2 * Math.PI * k * n) / p);
+        out[n] = s;
+      }
+      return out;
+    };
+    const yFull = invDft(K), y16 = invDft(16);
+    let rtErr = 0;
+    for (let n = 0; n < p; n++) rtErr = Math.max(rtErr, Math.abs(yFull[n] - (n === a ? 1 : 0)));
+    const XT = (x0, n) => x0 + (colW * n) / (p - 1);
+    ctx.strokeStyle = "#f0c08a"; ctx.lineWidth = 1.4; ctx.beginPath();
+    for (let n = 0; n < p; n++) { const x = XT(xB, n), y = YT(yB, hB, y16[n]); n ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+    ctx.stroke();
+    ctx.strokeStyle = "#c1440e"; ctx.lineWidth = 1.8; ctx.beginPath();
+    for (let n = 0; n < p; n++) { const x = XT(xB, n), y = YT(yB, hB, yFull[n]); n ? ctx.lineTo(x, y) : ctx.moveTo(x, y); }
+    ctx.stroke();
+    ctx.fillStyle = "#b3761a"; ctx.font = "10.5px sans-serif"; ctx.textAlign = "left";
+    ctx.fillText(`前 16 个频率（峰 ${y16[a].toFixed(2)}）`, xB + 4, yB + 14);
+    ctx.fillStyle = "#8a93a5"; ctx.font = "10.5px sans-serif"; ctx.textAlign = "left";
+    ctx.fillText(`与 (a) 逐点重合，最大偏差 ${rtErr.toExponential(0)}`, xB + 206, 52);
+    ctx.fillStyle = "#c1440e"; ctx.font = "bold 10.5px sans-serif"; ctx.textAlign = "right";
+    ctx.fillText(`全部 ${K} 个 → 峰 1.000`, xB + colW - 4, yB + 14);
+
+    // 时域两图的 x 刻度
+    ctx.fillStyle = "#8a93a5"; ctx.font = "10.5px sans-serif"; ctx.textAlign = "center";
+    for (const x0 of [xA, xB]) {
+      for (let n = 0; n < p; n += 16) {
+        const isLast = n + 16 >= p;
+        ctx.textAlign = isLast ? "right" : "center";
+        ctx.fillText(String(n), isLast ? x0 + colW : XT(x0, n), yA + hA + 15);
+      }
+    }
+
+    // ============ (c) 左下：幅度谱 ============
+    const yC = 196, hC = 92;
+    const YC = (v) => yC + hC - (hC * v) / (Rk * 1.3);
+    ctx.textAlign = "left"; ctx.fillStyle = "#2a2f3a"; ctx.font = "bold 12px sans-serif";
+    ctx.fillText(`(c) 幅度谱：|c_k|（k = 1…${K}）`, xA, 186);
+    ctx.fillStyle = "#8a93a5"; ctx.font = "10.5px sans-serif";
+    ctx.fillText(`全平，且与 a 无关`, xA + 176, 186);
+    ctx.strokeStyle = "#eef0f4";
+    for (const g of [0, c0, Rk]) { ctx.beginPath(); ctx.moveTo(xA, YC(g)); ctx.lineTo(xA + colW, YC(g)); ctx.stroke(); }
+    ctx.fillStyle = "#8a93a5"; ctx.font = "10.5px sans-serif"; ctx.textAlign = "right";
+    ctx.fillText("2/113", xA - 6, YC(Rk) + 4); ctx.fillText("0", xA - 6, YC(0) + 4);
+    const bwK = colW / K;
+    for (let i = 0; i < K; i++) {
+      ctx.fillStyle = "#2e8b66";
+      ctx.fillRect(xA + i * bwK + 0.8, YC(Rk), Math.max(bwK - 1.6, 1.0), YC(0) - YC(Rk));
+    }
+    ctx.strokeStyle = "#b8860b"; ctx.setLineDash([4, 3]); ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(xA, YC(c0)); ctx.lineTo(xA + colW, YC(c0)); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle = "#b3761a"; ctx.font = "bold 10.5px sans-serif"; ctx.textAlign = "left";
+    ctx.fillText(`每个 k 都是 2/${p} = ${Rk.toFixed(5)}（虚线 = 直流 ${c0.toFixed(5)}，正好一半）`, xA + 4, yC + 14);
+
+    // ============ (d) 右下：相位谱 ============
+    const yD = 196, hD = 92;
+    const stepRad = (2 * Math.PI * a) / p;
+    const YD = (v) => yD + hD - (hD * v) / (2 * Math.PI);
+    ctx.textAlign = "left"; ctx.fillStyle = "#2a2f3a"; ctx.font = "bold 12px sans-serif";
+    ctx.fillText(`(d) 相位谱：∠c_k = −2πka/${p}（对 2π 取模）`, xB, 186);
+    ctx.fillStyle = "#8a93a5"; ctx.font = "10.5px sans-serif";
+    ctx.fillText(`每步前进 2πa/${p} = ${stepRad.toFixed(3)} rad`, xB + 268, 186);
+    ctx.strokeStyle = "#eef0f4";
+    for (const g of [0, Math.PI, 2 * Math.PI]) { ctx.beginPath(); ctx.moveTo(xB, YD(g)); ctx.lineTo(xB + colW, YD(g)); ctx.stroke(); }
+    ctx.fillStyle = "#8a93a5"; ctx.textAlign = "right";
+    ctx.fillText("2π", xB - 6, YD(2 * Math.PI) + 4);
+    ctx.fillText("π", xB - 6, YD(Math.PI) + 4);
+    ctx.fillText("0", xB - 6, YD(0) + 4);
+    const XD = (k) => xB + ((k - 0.5) * colW) / K;
+    const phOf = (k) => ((2 * Math.PI * k * a) / p) % (2 * Math.PI);
+    ctx.strokeStyle = "#e6d2b0"; ctx.lineWidth = 1.2; ctx.beginPath();
+    for (let k = 1; k <= K; k++) {
+      const y = YD(phOf(k));
+      k === 1 ? ctx.moveTo(XD(k), y) : ctx.lineTo(XD(k), y);
+    }
+    ctx.stroke();
+    for (let k = 1; k <= K; k++) {
+      ctx.fillStyle = "#b8860b";
+      ctx.beginPath(); ctx.arc(XD(k), YD(phOf(k)), 1.4, 0, 2 * Math.PI); ctx.fill();
+    }
+
+    // 频域两图的 x 刻度
+    ctx.fillStyle = "#8a93a5"; ctx.font = "10.5px sans-serif";
+    for (const [x0] of [[xA], [xB]]) {
+      for (const k of [1, 16, 32, 48, K]) {
+        ctx.textAlign = k === K ? "right" : "center";
+        ctx.fillText(String(k), k === K ? x0 + colW : x0 + ((k - 0.5) * colW) / K, yC + hC + 15);
+      }
+    }
+  }
+
+  /** EMBED 视图主流程：⓿ one-hot(a) 的 DFT ① emb(a) 本体 ② 56 个频率各自的样子 ③ 叠加回去 = one-hot(a) ④ 真实逆变换 */
+  function runEmbedView(a) {
+    const p = state.cfg.p, d = state.cfg.d_model;
+    const te = state.mats["token_embed"];
+    const bs = embedBasis(p, d);
+    const K = bs.K;                                   // = ⌊P/2⌋ = 56
+
+    // —— ① emb(a) 本体 ——
+    const vec = new Float64Array(d);
+    for (let c = 0; c < d; c++) vec[c] = te.data[a * d + c];
+    const dv = drawEmbedVector($("#cEmbedWave"), d, a, vec, bs);
+
+    // —— ② 每个频率的强度（由真实权重算）+ 56 条波长什么样 ——
+    const amps = new Float64Array(K);
+    for (let k = 1; k <= K; k++) {
+      const th = (2 * Math.PI * k * a) / p, ck = Math.cos(th), sk = Math.sin(th);
+      const Ak = bs.A[k - 1], Bk = bs.B[k - 1];
+      let s = 0;
+      for (let c = 0; c < d; c++) { const t = ck * Ak[c] + sk * Bk[c]; s += t * t; }
+      amps[k - 1] = Math.sqrt(s);
+    }
+    drawEmbedWaves($("#cEmbedSplit"), p, a, K, amps);
+
+    // —— ⓿ 纯 DFT：one-hot(a) 从时域变到频域（与权重无关，只用到 a）——
+    drawEmbedDft($("#cEmbedDft"), p, a, K);
+
+    // —— ③ 叠加回 token 轴 ——
+    drawEmbedSum($("#cEmbedParts"), p, a, K);
+
+    // 自检：用这 56 个频率与它们的相位重建 emb(a)，误差应为机器精度
+    let sse = 0, sst = 0;
+    for (let c = 0; c < d; c++) {
+      let s = bs.DC[c];
+      for (let k = 1; k <= K; k++) {
+        const th = (2 * Math.PI * k * a) / p;
+        s += Math.cos(th) * bs.A[k - 1][c] + Math.sin(th) * bs.B[k - 1][c];
+      }
+      sse += (vec[c] - s) * (vec[c] - s);
+      sst += vec[c] * vec[c];
+    }
+    const errPct = sst > 0 ? (100 * sse) / sst : 0;
+    const top = Array.from({ length: K }, (_, i) => i + 1).sort((x, z) => amps[z - 1] - amps[x - 1]);
+    const a1 = top[0], a2 = top[1], a3 = top[2];
+
+    // —— ④ 真实逆变换：emb(a) 的 128 个数 → 113 个系数 x → 整条 one-hot 曲线 ——
+    const xc = embedCoeffs(bs, vec);
+    const J6 = Math.min(6, K);
+    const keep = new Uint8Array(K + 1);
+    for (let i = 0; i < J6; i++) keep[top[i]] = 1;
+    const yFull = new Float64Array(p), yJ = new Float64Array(p);
+    for (let n = 0; n < p; n++) {
+      let sf = xc[0], sj = xc[0];
+      for (let k = 1; k <= K; k++) {
+        const th = (2 * Math.PI * k * n) / p;
+        const v = xc[2 * k - 1] * Math.cos(th) + xc[2 * k] * Math.sin(th);
+        sf += v;
+        if (keep[k]) sj += v;
+      }
+      yFull[n] = (sf - 0.5) / (K + 0.5);
+      yJ[n] = (sj - 0.5) / (J6 + 0.5);
+    }
+    drawEmbedInverse($("#cEmbedInv"), p, a, K, yFull, yJ, J6);
+
+    // 逆变换的自检量
+    let eCoeff = Math.abs(xc[0] - 1);
+    for (let k = 1; k <= K; k++) {
+      const th = (2 * Math.PI * k * a) / p;
+      eCoeff = Math.max(eCoeff, Math.abs(xc[2 * k - 1] - Math.cos(th)), Math.abs(xc[2 * k] - Math.sin(th)));
+    }
+    let eHot = 0, okArg = true, peak = 0;
+    for (let n = 0; n < p; n++) {
+      const truth = n === a ? 1 : 0;
+      eHot = Math.max(eHot, Math.abs(yFull[n] - truth));
+      if (yFull[n] > peak) { peak = yFull[n]; okArg = n === a; }
+    }
+    let jPeak = 0, jArg = -1, jSecond = 0;
+    for (let n = 0; n < p; n++) if (yJ[n] > jPeak) { jPeak = yJ[n]; jArg = n; }
+    for (let n = 0; n < p; n++) if (n !== jArg && yJ[n] > jSecond) jSecond = yJ[n];
+
+    // EMBED 只有三块：本体 / 56 个频率 / 叠加；其它视图用的那块先藏起来
+    for (const id of ["#freqCap2", "#cEmbedSpec", "#edSpecNote"]) $(id).hidden = true;
+    const nSel = $("#freqTop");
+    if (nSel && nSel.closest(".kv")) nSel.closest(".kv").style.display = "none";
+    $("#embedSplitWrap").hidden = false;
+    $("#embedDftWrap").hidden = false;
+
+    // —— 文案 ——
+    const st = stageOf(state.loadedEpoch);
+    $("#freqStage").textContent = `${state.loadedEpoch} 步${st ? " · " + st : ""}`;
+    $("#freqCap0").innerHTML =
+      `⓿ <b>纯 DFT 往返</b>：one-hot(a) 时域 →(DFT)→ 频域 →(逆 DFT)→ 又回到时域 —— ` +
+      `左上 = 输入，左下 / 右下 = 中间步骤，右上 = 输出（全程与权重无关，只用到 <code>a</code>）`;
+    $("#freqCap1").innerHTML =
+      `① <b>emb(a)</b> 本体：横轴 = 128 个维度下标（1…128），纵轴 = 该维的数值（<code>W_E[a, c]</code>，纯嵌入矩阵）。` +
+      `底部<b>色带</b>标出每一维的<b>主导频率</b>（对每一列沿 token 轴做 DFT，振幅 <code>√(A<sub>k</sub>[c]²+B<sub>k</sub>[c]²)</code> 最大的那个 k），` +
+      `箭头指向该频率振幅最大的维度`;
+    $("#edDftNote").innerHTML =
+      `<b>怎么算出来的：</b>把 <code>one-hot(a)</code> 代进 DFT 定义式 <code>ĉ<sub>k</sub> = Σ<sub>n</sub> x[n]·e<sup>−2πikn/${p}</sup></code>，` +
+      `因为 x[n] 只在 n = a 处非零，求和只剩一项：<b>ĉ<sub>k</sub> = e<sup>−2πika/${p}</sup></b>。` +
+      `取模得 <b>|ĉ<sub>k</sub>| = 1</b>（对所有 k 都一样），取角得 <b>∠ĉ<sub>k</sub> = −2πka/${p}</b>（随 k <b>线性</b>）。` +
+      `<br><b>换成实数记法</b>（直流 + ${K} 对 cos/sin）：直流 <code>c₀ = 1/${p} = ${(1 / p).toFixed(5)}</code>，` +
+      `每个频率的振幅都恰好 <code>= 2/${p} = ${(2 / p).toFixed(5)}</code>，相位 <code>φ<sub>k</sub> = 2πka/${p}</code>。` +
+      `<br><b>三个纯 DFT 的事实：</b>` +
+      `<br>1️⃣ <b>为什么需要 ${K} 个频率</b>：${p} 个实数进 → 1 个直流 + ${K} 对 (cos,sin) 系数出来，` +
+      `因为实信号的 DFT 是共轭对称的，k > ${K} 的部分完全重复 k < ${K} 的信息。` +
+      `信息量 1 + 2×${K} = <b>${2 * K + 1} = ${p}</b>，一个不多一个不少。` +
+      `<br>2️⃣ <b>幅度谱完全与 a 无关</b>：不管 a 是几，幅度都恒为 2/${p} —— 换 token 只会把相位整体平移，幅度谱一个像素都不变。` +
+      `所以「token 是几」这个信息<b>只存在于相位里</b>。` +
+      `<br>3️⃣ <b>逆 DFT 回得去（右上图）</b>：把这 ${2 * K + 1} 个系数代进逆变换定义式，` +
+      `<code>x[n] = c₀ + Σ<sub>k</sub>[a<sub>k</sub>·cos(2πkn/${p}) + b<sub>k</sub>·sin(2πkn/${p})]</code>，` +
+      `逐点算出 ${p} 个值 —— <b>精确回到 one-hot(a)</b>（与左上图逐点重合）。` +
+      `道理是：在 n = a 处这 ${K} 条波<b>全部同相 → 相长</b>（加起来 = 1）；其它位置彼此错开 → <b>相消</b>（加起来 = 0）。` +
+      `右上图里那条浅橙色曲线是「只保留前 16 个频率」的逆变换，峰只有 ${((1 + 32) / p).toFixed(3)} —— ` +
+      `保留的频率越多，峰越高越窄（因为 n = a 处每多一个频率就多贡献 2/${p}）。`;
+
+    $("#freqCap1b").innerHTML =
+      `② 把 emb(a) 拆开来看：它装着 <b>${K} 个频率</b>。⚠️ <b>不是「第 c 维 = 第 k 个频率」</b>——` +
+      `频率是<b>沿 token 轴</b>的周期（横轴 = token n = 0…${p - 1}），而且每个频率 k 都是一对<b>铺满全部 ${d} 维</b>的向量` +
+      `<code>(A<sub>k</sub>, B<sub>k</sub>)</code>，所以每一维里都同时混着 ${K} 个频率。` +
+      `下图 = 这 ${K} 个频率沿 token 轴各自的样子（一行一条波；右列 R = 该频率在 emb(a) 里那一份的<b>长度</b>）`;
+    $("#freqCap3").innerHTML =
+      `③ 把这些频率一条条<b>叠加回去</b>（逆变换）：前 4 个 → 前 16 个 → 全部 ${K} 个，峰高始终是 1，旁瓣越来越小，最后正好是 one-hot(a)`;
+    $("#edWaveNote").innerHTML =
+      `① 这就是 <b>emb(a = ${a})</b> 这个 128 维向量本体：${d} 个数看上去毫无规律，` +
+      `但它其实是<b>频域</b>里的东西——把它拆开正好是 <b>${K} 个频率</b>的「cos / sin 对」（下面 ② 逐条画出来）。` +
+      `<br>也就是说：one-hot 在时域里是一根尖峰，搬到频域后变成 ${K} 个频率的相位组合；这一步就是 DFT。` +
+      `<br><b>⚠️ 「装着 ${K} 个频率」不是在「128 个抽屉」里放频率。</b>` +
+      `频率是<b>沿 token 轴</b>（横轴 n = 0…${p - 1}，共 ${p} 个 token）的周期，` +
+      `而 128 个维度是<b>纵轴</b>——W_E 是一张 ${p}×${d} 的表：` +
+      `<b>取一行</b>（固定 a）= emb(a) 的 ${d} 个数，看不出周期；` +
+      `<b>取一列</b>（固定 c）= 沿 token 的 ${p} 个数，才是周期曲线。` +
+      `emb(a) 本质上是「这 ${d} 条曲线在横坐标 n = a 处同时取一次样」得到的 ${d} 个纵坐标。` +
+      `所以没有任何一维「属于」某个频率：实测 dim 1 的主导频率是 k=20（不是 k=1），而全部 128 维里主导频率为 k=1 的有 <b>0</b> 个。` +
+      `<br><b>色带（关键频率在哪几维）：</b>对每一维 c，把它的 128 个「振幅」<code>√(A<sub>k</sub>[c]²+B<sub>k</sub>[c]²)</code> 比一遍，最大的那个 k 就是该维的<b>主导频率</b>。` +
+      `实测分布：${dv.ranked.slice(0, 3).map(([k, n]) => `<b>k=${k}</b> 占 ${n} 维`).join("、")}，` +
+      `加起来就是 ${dv.covered} / ${d} 维；振幅最大的维分别是 ` +
+      `${dv.marks.map((mk) => `<b>dim ${mk.c + 1}</b> → k=${mk.k}`).join("、")}。` +
+      `<br>但要注意：这是「<b>主导</b>」不是「独占」——单个维度里主导频率只占中位数 <b>${(100 * dv.medShare).toFixed(0)}%</b> 的能量，` +
+      `前 6 个频率合计才占到中位数 <b>${(100 * dv.medTop6).toFixed(0)}%</b>。` +
+      `也就是说<b>没有「第 c 维 = 第几个频率」的对应关系</b>（128 维的顺序是 SGD 自己定的），` +
+      `色带只是把「这一维主要受哪个频率支配」标出来，真正的频率成分要看 ②。`;
+    $("#edSplitNote").innerHTML =
+      `② <b>先分清轴</b>：频率在 <b>token 轴</b>上（横轴 n = 0…${p - 1}），不在 128 个维度上。` +
+      `每个频率 k 沿 token 轴的样子是 <code>cos(2πk(n−a)/${p})</code>，也就是「${p} 步里转 k 圈」的波。` +
+      `<b>关键：这 ${K} 条波的相位全部由 emb(a) 决定，它们在 n = a 处严格同相</b>（绿虚线）——` +
+      `所以单看每条波都有很多峰（周期 ${p}/k，谁也定不了 a），但一起加就会在 a 处堆出一个尖峰（见 ③）。` +
+      `<br>右列 R = 该频率在 emb(a) 里那一份的<b>长度</b>：<code>R<sub>k</sub> = ‖cos θ<sub>k</sub>·A<sub>k</sub> + sin θ<sub>k</sub>·B<sub>k</sub>‖</code>（θ<sub>k</sub> = 2πka/${p}）。` +
+      `A<sub>k</sub>、B<sub>k</sub> 是<b>长度 128 的方向向量</b>（把每一列沿 token 轴做 DFT 得到），所以 R<sub>k</sub> 用的是<b>全部 128 维</b>的平方和，` +
+      `<b>不是</b>「第 k 维的取值」——128 维的顺序是 SGD 自己定的（与理想布局余弦相似度只有 0.025），第 1 维和 k=1 没有任何对应关系。` +
+      `实测最强的 <b>k = ${a1}</b>（${amps[a1 - 1].toFixed(3)}）和 <b>k = ${a2}</b>（${amps[a2 - 1].toFixed(3)}），` +
+      `第 3 名的 k = ${a3} 只有 ${amps[a3 - 1].toFixed(3)}——顿悟后模型实际只用到少数几个频率（稀疏傅里叶电路），` +
+      `但它们的相位关系仍然是严格的正弦，所以照样能精确复原。`;
+    $("#edPartsNote").innerHTML =
+      `③ 理想版逆变换：J 个频率的和 <code>Σ<sub>k≤J</sub>cos(2πk(n−a)/${p})</code> 除以 <code>J+0.5</code> 就是上图曲线（这样峰高恒为 1）。` +
+      `J 越大旁瓣越小；<b>全部 ${K} 个用上时</b>，和式在 n = a 处 = ${K}、其它位置 = −1/2，` +
+      `归一化后<b>精确等于 one-hot(a)</b>（灰柱）。` +
+      `<br>⚠️ <b>这张图与权重无关</b>：它只用到 <code>a</code>，不读 <code>W_E</code>（换 seed / epoch 它一个像素都不变）。` +
+      `它证明的是「1 + 2×${K} = ${2 * K + 1} = P 个频率系数是完备的」——所以用频率表示 token 不会丢信息。` +
+      `真正<b>从 emb(a) 出发</b>的逆变换见下面 ④。` +
+      `<br>自检（这是另一件事）：用这 ${K} 个频率与它们的相位重建 emb(a)，相对误差 <b>${errPct.toExponential(1)}%</b>` +
+      `（机器精度，说明「emb(a) = 这 ${K} 个频率」不是比喻，是精确分解）。`;
+    $("#freqCap4").innerHTML =
+      `④ <b>真实逆变换</b>：不假设任何东西，直接拿 ① 里那 ${d} 个数算出整条曲线 —— 红线与灰柱（真值 one-hot）应当完全重合`;
+    $("#edInvNote").innerHTML =
+      `<b>两步，全部只吃 emb(a) 的 ${d} 个数：</b>` +
+      `<br>① <b>解系数</b>：<code>x = R⁻¹·(Qᵀ·w)</code>（w = emb(a)，128 个数 → ${2 * K + 1} 个频率系数）。` +
+      `其中 Q、R 是基矩阵 [DC, A₁, B₁, …, A<sub>${K}</sub>, B<sub>${K}</sub>] 的 QR 分解——` +
+      `它由<b>整张 W_E</b> 算出来。实测解出的 <code>x[0]</code> 与 <code>cos/sin θ<sub>k</sub></code> 对真值的最大偏差 = ` +
+      `<b>${eCoeff.toExponential(1)}</b>（≈0，说明系数被完整还原了）。` +
+      `<br>② <b>读回 token 轴</b>：<code>one-hot(n) = (Σ<sub>j</sub> x<sub>j</sub>·P[n,j] − 0.5)/(${K}+0.5)</code>，` +
+      `其中 <code>P[n,j]</code> 就是「token n 自己的相位行」<code>[1, cos(2πkn/${p}), sin(2πkn/${p}), …]</code>` +
+      `——所以第 ② 步本质上就是<b>把两个相位行做点积</b>（只有 n = a 时同相 → 相长）。这和 attention 的 QKᵀ 是同一件事。` +
+      `<br><b>结果：</b>峰值 <b>${peak.toFixed(6)}</b> 落在 n = ${a}（正确 ✅），与真值 one-hot 的最大偏差 <b>${eHot.toExponential(1)}</b>` +
+      `（不为 0 是因为基矩阵的条件数高达 <b>1.18×10⁵</b>——128 维里塞了 ${2 * K + 1} 个方向且彼此不正交，放大机器精度）。` +
+      `<br><b>橙线 = 只用最强的 ${J6} 个频率（k = ${top.slice(0, J6).join(", ")}）</b>：` +
+      `峰还在 n = ${jArg}（argmax 依然正确 ✅，因为相位是一致的），但旁边鼓起了 <b>${jSecond.toFixed(3)}</b> 的旁瓣 ——` +
+      `峰高 ${jPeak.toFixed(3)} / 次高 ${jSecond.toFixed(3)}。` +
+      `<b>相位对 ⇒ 一定认得出是哪个 token；频率少 ⇒ 选择性差</b>。` +
+      `<br>⚠️ 注意：这个"逆矩阵"是<b>我们</b>用整张表算出来的，<b>不是模型自带的</b>。` +
+      `模型最后那步读出用的是学出来的 <code>unembed</code>（见 LOGITS 视图），它和这个精确逆矩阵的余弦相似度只有 0.095 —— 几乎无关。`;
+    $("#freqResult").hidden = false;
+  }
+
+  // ===================================================================
   // 频率视图：沿数据流逐级看同一件事 —— 某一维是不是少数几个 sin/cos 波
   //   EMBED → ATTENTION → MLP → LOGITS，正好是傅里叶乘法电路的全链路
   //   （读出权重 W_U 的视图已下线：它的“输出”就是 logits，想看权重看下面热图区）
@@ -1603,12 +2448,13 @@
   const FREQ_SRC = {
     embed: {
       name: "EMBED 频率", icon: "🎼", btn: "embedBtn", stage: "embed",
-      selLabel: "词嵌入维度", selKind: "dim", varName: "a",
-      xAxis: "token a", qty: "W_E[a, c]",
-      cap1: "① 把这一列看成 token 的函数：横轴 a = 0…P−1，纵轴 W<sub>E</sub>[a, c]（纯 embedding 矩阵，不含位置项）",
+      selLabel: "token a", selKind: "token", varName: "a",
+      xAxis: "token a", qty: "emb(a)",
+      cap1: "① emb(a) 本体：横轴 = 128 个维度下标（1…128），纵轴 = 该维的数值",
       where: "论文 3.1 第一句 / 图 3（左）",
-      why: "<b>词嵌入把 token a 映射到 sin(w<sub>k</sub>a)、cos(w<sub>k</sub>a)</b>：每一维都只是少数几个 sin/cos 波的固定组合，而不是一张任意查表。",
-      hint: "固定<b>一个词嵌入维</b>、扫 token a，把它拆成几个 sin/cos 波——上图看“少数几个波就能重建整条曲线”，下图看谱有多稀疏。" +
+      why: "<b>词嵌入把 token a 映射到 sin(w<sub>k</sub>a)、cos(w<sub>k</sub>a)</b>：这个 128 维向量不是一张任意查表，而是少数几个 sin/cos 波的固定组合。",
+      hint: "三级递进：① 先看 <b>emb(a)</b> 这个 128 维向量本体；② 它其实装着 <b>56 个频率</b>——逐条画出这 56 条波长什么样（相位全由 emb(a) 决定，在 n = a 处同相）；" +
+            "③ 把这 56 条波<b>叠加回去</b>（逆变换），波峰唯一落在 n = a，正好复原出 one-hot(a)。" +
             "结构图上对应 EMBED 里那条 <b>W<sub>E</sub>[a]</b> 向量（a / b / = 三条中的第一条），只点亮它、不点亮整块 EMBED。",
       vec: "a",
     },
@@ -1649,13 +2495,11 @@
     },
   };
 
-  /** 取 src 指定的那条长度 p 的曲线（sel = 维度下标或输出类）。 */
+  /** 取 src 指定的那条长度 p 的曲线（sel = 维度下标或输出类）。
+   *  注：EMBED 已改为独立视图（见 runEmbedView），不再走这里。 */
   function freqSignal(src, sel, p, d) {
     const y = new Float64Array(p);
-    if (src === "embed") {
-      const te = state.mats["token_embed"];                 // [(p+1), d]，行 = token
-      for (let i = 0; i < p; i++) y[i] = te.data[i * d + sel];
-    } else if (src === "logits") {
+    if (src === "logits") {
       for (let b = 0; b < p; b++) y[b] = forwardOne(0, b).logits[sel];
     } else {
       const key = src === "attn" ? "attn" : "mlp";
@@ -1675,14 +2519,6 @@
 
   /** 自动挑一条最“正弦”的维度 / 输出类（前 6 个频率占比最高）。 */
   function pickFreqIndex(src, p, d) {
-    if (src === "embed") {                                  // 直接读矩阵，很便宜
-      let best = 0, bs = -1;
-      for (let k = 0; k < d; k++) {
-        const sc = freqConcentration(freqSignal(src, k, p, d), p);
-        if (sc > bs) { bs = sc; best = k; }
-      }
-      return best;
-    }
     // 需要前向的类型：一趟扫 b，把所有维度/输出类的曲线一起收下来再评分
     const n = src === "logits" ? p : d;
     const cols = Array.from({ length: n }, () => new Float64Array(p));
@@ -1699,8 +2535,10 @@
     return best;
   }
 
-  /** 频率视图主流程：src ∈ embed / attn / mlp / logits */
-  async function runFreqView(src) {
+  /** 频率视图主流程：src ∈ embed / attn / mlp / logits
+   *  resync = true 表示由按钮点开（EMBED 会把 token 同步成结构图上的 a）；
+   *  换 epoch 引起的自动重算不带这个标志，以免把用户选好的 token 冲掉。 */
+  async function runFreqView(src, resync = false) {
     const spec = FREQ_SRC[src] || FREQ_SRC.embed;
     const btn = $(`#${spec.btn}`);
     if (!state.cfg || !state.epochs || state.epochs.length === 0) return;
@@ -1716,29 +2554,46 @@
     btn.disabled = true; btn.innerHTML = "分析中…";
     try {
       const p = state.cfg.p, d = state.cfg.d_model;
-      // 维度 / 输出类选择器：换一级就重建选项，并自动挑一条最“正弦”的
+      // 选择器：dim = 残差流维度，class = 输出类，token = 词表里的 token（EMBED 视图用）
       const sel = $("#freqSel");
-      const kind = spec.selKind === "class" ? "class" : "dim";
+      const kind = spec.selKind === "class" ? "class" : spec.selKind === "token" ? "token" : "dim";
+      const switched = sel.dataset.src !== src;
       $("#freqSelLabel").textContent = spec.selLabel;
       $("#freqTitle").textContent = `${spec.icon} ${spec.name}`;
-      if (sel.dataset.src !== src) {
+      if (switched) {
         sel.innerHTML = "";
-        const n = kind === "class" ? p : d;
-        for (let i = 0; i < n; i++) sel.add(new Option(`${kind === "class" ? "类 " : "dim "}${i}`, String(i)));
+        const n = kind === "dim" ? d : p;
+        const pre = kind === "class" ? "类 " : kind === "token" ? "token " : "dim ";
+        for (let i = 0; i < n; i++) sel.add(new Option(`${pre}${i}`, String(i)));
         sel.dataset.src = src;
+      }
+      if (kind === "token") {
+        // 默认跟随结构图上方那个样本的 a（跑过测试就用测试样本，否则用结构图的默认值）
+        if (switched || resync) sel.value = String(state.sample ? state.sample.a : defaultSampleAB(p).a);
+      } else if (switched) {
         if (state.freqPick[src] == null) state.freqPick[src] = pickFreqIndex(src, p, d);
         sel.value = String(state.freqPick[src]);
       }
       const topSel = $("#freqTop");
       if (topSel.options.length === 0) {
         for (let n = 1; n <= 8; n++) topSel.add(new Option(String(n), String(n)));
-        topSel.value = "3";
       }
+      // 换视图时把 N 复位到该级的默认值（EMBED 不用 N，它的控件会被隐藏）
+      if (switched) topSel.value = src === "embed" ? "2" : "3";
       const c = Number(sel.value), N = Number(topSel.value);
 
       // 维度 / 输出类选择器已经就绪，让结构图上的高亮再同步一次
       // （LOGITS 点亮的格子要跟 “输出类” 下拉框一致；setPanelInfo 调用时下拉框还没建好）
       highlightArch(spec.stage);
+
+      // EMBED 走重构后的三级视图（① emb(a) 本体 ② 56 个频率 ③ 叠加回 one-hot(a)）
+      if (src === "embed") { runEmbedView(c); return; }
+      // 其它三级视图：恢复被 EMBED 藏起来的那一块，并隐藏 EMBED 专属的 ②
+      for (const id of ["#freqCap2", "#cEmbedSpec", "#edSpecNote"]) $(id).hidden = false;
+      const nSel2 = $("#freqTop");
+      if (nSel2 && nSel2.closest(".kv")) nSel2.closest(".kv").style.display = "";
+      $("#embedSplitWrap").hidden = true;
+      $("#embedDftWrap").hidden = true;
 
       const y = freqSignal(src, c, p, d);
       const series = fourierSeries(y, p);
@@ -1826,7 +2681,7 @@
     // 五个“频率”按钮：同一套视图，只是数据来源不同（沿数据流 EMBED → … → LOGITS）
     for (const key of Object.keys(FREQ_SRC)) {
       const b = $(`#${FREQ_SRC[key].btn}`);
-      if (b) b.addEventListener("click", () => runFreqView(key));
+      if (b) b.addEventListener("click", () => runFreqView(key, true));
     }
     // 切换维度/输出类、保留频率数：面板正显示时立即重画
     const fsel = $("#freqSel");
@@ -1839,6 +2694,62 @@
       const r = $("#freqResult");
       if (r && !r.hidden && state.freqSrc) runFreqView(state.freqSrc);
     });
+    // 卡片右上角的全屏按钮（⛶ / ✕）
+    for (const b of document.querySelectorAll("[data-fs-btn]")) {
+      b.addEventListener("click", () => {
+        const card = b.closest("[data-fs]");
+        if (card) toggleCardFullscreen(card);
+      });
+    }
+    syncFsBtns();
+    // 浏览器全屏状态变了（含用户按 Esc / F11）：同步图标并按新尺寸重画
+    document.addEventListener("fullscreenchange", () => {
+      syncFsBtns();
+      for (const card of document.querySelectorAll("[data-fs]")) {
+        const fn = FS_REDRAW[card.dataset.fs];
+        if (fn) fn();
+      }
+    });
+    // 退化（class）全屏：Esc 退出并重画
+    document.addEventListener("keydown", (e) => {
+      if (e.key !== "Escape") return;
+      for (const card of document.querySelectorAll("[data-fs].fs-fallback")) {
+        card.classList.remove("fs-fallback");
+        const fn = FS_REDRAW[card.dataset.fs];
+        if (fn) fn();
+      }
+      syncFsBtns();
+    });
+    // 窗口尺寸变化时，正在全屏的卡片要重新量一下空间并重画
+    window.addEventListener("resize", () => {
+      for (const card of document.querySelectorAll("[data-fs]")) {
+        if (!cardIsFull(card.dataset.fs)) continue;
+        const fn = FS_REDRAW[card.dataset.fs];
+        if (fn) fn();
+      }
+    });
+    // 频率面板右上角的「i」：用 iframe 弹层打开「时域 → 频域」基础教程
+    const infoModal = $("#infoModal"), infoFrame = $("#infoFrame");
+    if (infoModal && infoFrame) {
+      const openInfo = () => {
+        const src = infoFrame.getAttribute("src");
+        if (!src || src === "about:blank") infoFrame.src = "/fourier-basics.html";   // 首次点开才加载
+        infoModal.hidden = false;
+        document.body.style.overflow = "hidden";
+      };
+      const closeInfo = () => {
+        infoModal.hidden = true;
+        document.body.style.overflow = "";
+      };
+      const ib = $("#freqInfoBtn");
+      if (ib) ib.addEventListener("click", openInfo);
+      const ic = $("#infoClose");
+      if (ic) ic.addEventListener("click", closeInfo);
+      infoModal.addEventListener("click", (e) => { if (e.target === infoModal) closeInfo(); });
+      document.addEventListener("keydown", (e) => {
+        if (e.key === "Escape" && !infoModal.hidden) closeInfo();
+      });
+    }
     // 模加法表：鼠标悬停显示这一对 (a,b)
     const addCv = $("#cAdd");
     if (addCv) {

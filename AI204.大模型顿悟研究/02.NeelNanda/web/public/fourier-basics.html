@@ -1,0 +1,1070 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>时域 → 频域：从基础直觉讲起</title>
+<style>
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #0b0e18;
+    color: #e5e9f5;
+    margin: 0;
+    padding: 24px 16px 100px;
+    line-height: 1.7;
+    -webkit-font-smoothing: antialiased;
+  }
+  .container { max-width: 980px; margin: 0 auto; }
+
+  h1 {
+    font-size: 1.7rem;
+    font-weight: 700;
+    margin: 0 0 6px;
+    background: linear-gradient(90deg, #7cb8ff, #b7f0d8);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+  .subtitle { color: #7f8aa8; margin: 0 0 28px; font-size: 0.95rem; }
+
+  /* ---- 滑块控制 ---- */
+  .controls {
+    position: sticky;
+    top: 12px;
+    z-index: 100;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 28px;
+    align-items: center;
+    margin-bottom: 24px;
+    padding: 14px 22px;
+    background: rgba(16, 20, 31, 0.92);
+    backdrop-filter: blur(12px);
+    border: 1px solid #1d2335;
+    border-radius: 14px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.35);
+  }
+  .control { display: flex; flex-direction: column; gap: 4px; }
+  .control label { font-size: 0.8rem; color: #7885a5; }
+  .control label b { color: #ffd08a; font-family: ui-monospace, monospace; font-weight: 700; font-size: 1rem; }
+  input[type=range] {
+    -webkit-appearance: none;
+    width: 240px; height: 4px;
+    background: #232b44; border-radius: 2px; outline: none;
+  }
+  input[type=range]::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: #5b9dff; cursor: pointer;
+    border: 2px solid #0b0e18;
+    box-shadow: 0 0 0 1px #5b9dff;
+  }
+  input[type=range]::-moz-range-thumb {
+    width: 16px; height: 16px; border-radius: 50%;
+    background: #5b9dff; cursor: pointer; border: 2px solid #0b0e18;
+  }
+
+  /* ---- 面板 ---- */
+  .panel {
+    position: relative;
+    background: #10141f;
+    border: 1px solid #1d2335;
+    border-radius: 16px;
+    padding: 26px 28px 24px;
+    margin-bottom: 24px;
+    opacity: 0;
+    transform: translateY(20px);
+    transition: opacity 0.6s ease, transform 0.6s ease;
+  }
+  .panel.visible { opacity: 1; transform: translateY(0); }
+
+  .sec-num {
+    position: absolute;
+    top: -14px;
+    left: 22px;
+    width: 32px; height: 32px;
+    background: #131829;
+    border: 2px solid #2a3454;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-family: ui-monospace, monospace;
+    font-size: 0.85rem;
+    color: #7cb8ff;
+    font-weight: 700;
+  }
+  .panel h2 {
+    font-size: 1.15rem;
+    margin: 0 0 10px;
+    color: #a3c4ff;
+    font-weight: 600;
+  }
+  .panel p { color: #97a3c0; font-size: 0.92rem; margin: 0 0 14px; }
+  .panel p.dim { color: #6d7a9e; font-size: 0.85rem; }
+  .panel code {
+    background: #0a0d16;
+    padding: 2px 7px;
+    border-radius: 4px;
+    color: #ffd08a;
+    font-size: 0.85em;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .panel strong { color: #d5deff; font-weight: 600; }
+
+  canvas { display: block; max-width: 100%; height: auto; margin: 8px auto; }
+
+  .note {
+    background: #0c1019;
+    border-left: 3px solid #3d7bff;
+    padding: 12px 18px;
+    border-radius: 0 8px 8px 0;
+    font-size: 0.86rem;
+    color: #8b97b5;
+    margin-top: 16px;
+  }
+  .note b { color: #a3c4ff; }
+
+  .formula {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 0.87rem;
+    color: #c6d2ee;
+    background: #0a0d16;
+    border: 1px solid #1a2033;
+    border-radius: 10px;
+    padding: 14px 18px;
+    margin: 12px 0;
+    overflow-x: auto;
+    white-space: nowrap;
+    line-height: 2;
+  }
+  .formula .hl { color: #ffd08a; }
+  .formula .hl2 { color: #6ee7a8; }
+  .formula .hl3 { color: #4ea1ff; }
+  .formula .hl4 { color: #ff7eb6; }
+  .formula .dim { color: #5d6a8f; }
+
+  /* ---- 对比卡片 ---- */
+  .compare {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 14px;
+    margin: 16px 0;
+  }
+  @media (max-width: 640px) { .compare { grid-template-columns: 1fr; } }
+  .compare-card {
+    background: #0c1019;
+    border: 1px solid #1a2033;
+    border-radius: 10px;
+    padding: 16px 18px;
+  }
+  .compare-card h3 {
+    font-size: 0.88rem;
+    margin: 0 0 8px;
+    font-weight: 600;
+  }
+  .compare-card.td h3 { color: #ff9f6e; }
+  .compare-card.fd h3 { color: #6ee7a8; }
+  .compare-card p { font-size: 0.84rem; margin: 0; color: #8b97b5; }
+
+  /* ---- 流程图 ---- */
+  .flow {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
+    margin: 20px 0 8px;
+  }
+  .flow-box {
+    background: #0c1019;
+    border: 1px solid #26304d;
+    border-radius: 10px;
+    padding: 12px 22px;
+    font-size: 0.88rem;
+    color: #c6d2ee;
+    text-align: center;
+    min-width: 300px;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .flow-box .sub { color: #6d7a9e; font-size: 0.78rem; display: block; margin-top: 3px; }
+  .flow-box.blue { border-color: rgba(78,161,255,0.4); }
+  .flow-box.blue .sub { color: #4ea1ff; }
+  .flow-box.pink { border-color: rgba(255,126,182,0.4); }
+  .flow-box.pink .sub { color: #ff7eb6; }
+  .flow-box.green { border-color: rgba(110,231,168,0.4); }
+  .flow-box.green .sub { color: #6ee7a8; }
+  .flow-box.yellow { border-color: rgba(255,208,138,0.4); }
+  .flow-box.yellow .sub { color: #ffd08a; }
+  .flow-arrow {
+    color: #3a466a;
+    font-size: 1.3rem;
+    line-height: 1;
+    padding: 4px 0;
+  }
+
+  /* ---- 总结 ---- */
+  .summary {
+    background: linear-gradient(135deg, #0d1524, #0c1019);
+    border: 1px solid #1d2a45;
+    border-radius: 14px;
+    padding: 22px 26px;
+  }
+  .summary-item {
+    display: flex;
+    gap: 14px;
+    padding: 10px 0;
+    border-bottom: 1px solid #161d30;
+  }
+  .summary-item:last-child { border-bottom: none; }
+  .summary-item .key {
+    flex: 0 0 80px;
+    font-family: ui-monospace, monospace;
+    font-size: 0.85rem;
+    color: #7cb8ff;
+    font-weight: 600;
+  }
+  .summary-item .val {
+    font-size: 0.88rem;
+    color: #97a3c0;
+  }
+  .summary-item .val b { color: #d5deff; font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <h1>时域 → 频域</h1>
+  <p class="subtitle">从最基础的直觉开始，讲清楚到底发生了什么</p>
+
+  <!-- 控制条 -->
+  <div class="controls">
+    <div class="control">
+      <label>数字 a = <b id="aVal">15</b>　<span style="color:#5d6a8f">(0 ~ 112)</span></label>
+      <input type="range" id="aSlider" min="0" max="112" value="15">
+    </div>
+  </div>
+
+  <!-- ================= 一 ================= -->
+  <section class="panel">
+    <div class="sec-num">一</div>
+    <h2>时域：你平时看世界的方式</h2>
+    <p><strong>时域</strong>就是：横轴是时间，纵轴是信号的大小。比如你录了一段声音，画出来是这样：</p>
+    <canvas id="soundCanvas"></canvas>
+    <p style="margin-top:18px;">在模加法任务里，数字 <code>a</code> 的 one-hot 向量就是一个时域信号：</p>
+    <canvas id="onehotSmallCanvas"></canvas>
+    <p class="dim">这是时域：横轴是数字索引 <code>n</code>，纵轴是值。</p>
+  </section>
+
+  <!-- ================= 二 ================= -->
+  <section class="panel">
+    <div class="sec-num">二</div>
+    <h2>频域：换一个角度看同一个东西</h2>
+    <p><strong>频域</strong>是：横轴是频率，纵轴是该频率的强度。</p>
+    <p>同一个声音，在频域里可能是这样：</p>
+    <canvas id="spectrumCanvas"></canvas>
+    <p style="margin-top:16px;"><strong>频域告诉你：这个信号里，各个频率的成分各有多少。</strong></p>
+    <div class="compare">
+      <div class="compare-card td">
+        <h3>低频多</h3>
+        <p>信号变化慢，波形平缓，能量集中在频谱左侧。</p>
+      </div>
+      <div class="compare-card fd">
+        <h3>高频多</h3>
+        <p>信号变化快，波形尖锐，能量集中在频谱右侧。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 三 ================= -->
+  <section class="panel">
+    <div class="sec-num">三</div>
+    <h2>为什么需要频域？</h2>
+    <p>因为<strong>同一个东西，在时域里难处理，在频域里可能很简单。</strong></p>
+    <p>举个例子：<strong>两个声音混在一起，你想把它们分开。</strong></p>
+    <div class="compare">
+      <div class="compare-card td">
+        <h3>时域视角</h3>
+        <p>你看到的是两条波形叠加在一起，乱成一团，很难拆。</p>
+      </div>
+      <div class="compare-card fd">
+        <h3>频域视角</h3>
+        <p>你看到的是两组不同的频率峰。一个在低频，一个在高频。直接按频率切开就行。</p>
+      </div>
+    </div>
+    <div class="note">
+      <b>频域把“混在一起”变成了“分开排列”。</b><br>
+      再比如模加法 <code>(a + b) mod 113</code>：时域里要做进位、取模，很麻烦；频域里两个数字的旋转角度直接相加，天然取模。所以模型选择把数字搬到频域去处理。
+    </div>
+  </section>
+
+  <!-- ================= 四 ================= -->
+  <section class="panel">
+    <div class="sec-num">四</div>
+    <h2>怎么从时域变到频域？——DFT 的核心思想</h2>
+    <p>DFT 做的事情，一句话：</p>
+    <div class="note" style="border-left-color:#ffd08a;">
+      <b style="color:#ffd08a;">拿一堆不同频率的标准波，逐个去和你的信号做匹配，看匹配程度有多高。</b>
+    </div>
+
+    <p style="margin-top:18px;"><strong>1. 准备一组“标准波”</strong></p>
+    <p>对于每个频率 <code>k = 0, 1, 2, …, 112</code>，准备一个标准波 <code>e^(-i·2πkn/113)</code>。这是一个在复平面上旋转的波：</p>
+    <canvas id="standardCanvas"></canvas>
+
+    <p style="margin-top:18px;"><strong>2. 拿每个标准波去“匹配”你的信号</strong></p>
+    <p>匹配的方式是：<strong>逐点相乘，然后全部加起来。</strong></p>
+    <div class="formula">
+      X[k] = Σ<sub>n=0</sub><sup>112</sup> x[n] · e<sup>−i·2πkn/113</sup>
+    </div>
+    <p>这个操作叫<strong>内积</strong>，衡量的是：你的信号 <code>x</code> 和频率 <code>k</code> 的标准波有多像。</p>
+    <div class="compare">
+      <div class="compare-card fd">
+        <h3>如果很像</h3>
+        <p>X[k] 很大 → 信号含有大量这个频率。</p>
+      </div>
+      <div class="compare-card td">
+        <h3>如果不像</h3>
+        <p>X[k] 接近 0 → 信号几乎没有这个频率。</p>
+      </div>
+    </div>
+
+    <p style="margin-top:8px;"><strong>3. 对所有 k 都做一遍</strong></p>
+    <p>做完 113 个频率，你就得到了 113 个复数 <code>X[0], X[1], …, X[112]</code>。<strong>这 113 个数就是频域表示。</strong></p>
+  </section>
+
+  <!-- ================= 五 ================= -->
+  <section class="panel">
+    <div class="sec-num">五</div>
+    <h2>用 one-hot 走一遍</h2>
+    <p>数字 <code>a</code> 的 one-hot 向量：当 <code>n = a</code> 时为 1，其余全为 0。代入 DFT，求和只剩一项：</p>
+    <div class="formula">
+      X[k] = 1 · e<sup>−i·2πka/113</sup> = <span class="hl3">cos(2πka/113)</span> − i·<span class="hl4">sin(2πka/113)</span>
+    </div>
+
+    <canvas id="dftCanvas"></canvas>
+
+    <div class="note">
+      <b>这意味着什么？</b><br>
+      时域里：数字 a 是一个尖锐的脉冲，只在一个位置有值。<br>
+      频域里：这个脉冲变成了<strong>所有频率上都有值</strong>，每个频率 k 的“值”就是圆上的一个点。
+    </div>
+  </section>
+
+  <!-- ================= 六 ================= -->
+  <section class="panel">
+    <div class="sec-num">六</div>
+    <h2>为什么脉冲的频谱是“平坦”的？</h2>
+    <p>直觉上：</p>
+    <div class="compare">
+      <div class="compare-card fd">
+        <h3>缓慢变化的信号</h3>
+        <p>比如低频正弦波，它的能量集中在低频。</p>
+      </div>
+      <div class="compare-card td">
+        <h3>急剧变化的信号</h3>
+        <p>比如尖脉冲，它包含了所有频率的成分。</p>
+      </div>
+    </div>
+    <p><strong>脉冲是“最快的变化”——从 0 突然跳到 1，再突然跳回 0。</strong>要组成这么尖锐的形状，需要所有频率的正弦波一起合作。所以脉冲的频谱是平坦的：每个频率都贡献了相同的幅度，只是相位不同。</p>
+
+    <canvas id="phaseCanvas"></canvas>
+
+    <div class="note">
+      <b>相位</b>就是 <code>2πka/113</code>，它编码了脉冲的位置 <code>a</code>。<br>
+      • <b>幅度</b>告诉你“有多少这个频率”。<br>
+      • <b>相位</b>告诉你“这个频率的波峰在哪里”。<br><br>
+      对于 one-hot 脉冲，所有频率的幅度相同，但相位随 <code>k</code> 和 <code>a</code> 变化。<b style="color:#6ee7a8;">正是这些相位，唯一地编码了数字 a。</b>
+    </div>
+  </section>
+
+  <!-- ================= 七 ================= -->
+  <section class="panel">
+    <div class="sec-num">七</div>
+    <h2>把整条链串起来</h2>
+    <div class="flow">
+      <div class="flow-box blue">数字 a = <span id="flowA">15</span><span class="sub">一个 0 ~ 112 的整数</span></div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box blue">one-hot 编码<span class="sub">时域：一个尖脉冲 x[n] = δ[n − a]</span></div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box yellow">DFT：用所有频率的标准波去匹配<span class="sub">X[k] = cos(2πka/113) − i·sin(2πka/113)</span></div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box pink">实部、虚部拆开，拼成向量<span class="sub">嵌入向量：[cos(θ₁), sin(θ₁), cos(θ₂), sin(θ₂), …]</span></div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box green">模型后续层在频域里做旋转叠加<span class="sub">注意力层 → MLP → 输出层</span></div>
+      <div class="flow-arrow">↓</div>
+      <div class="flow-box green">完成模加法 (a + b) mod 113<span class="sub">预测答案 = <span id="flowAns">42</span></span></div>
+    </div>
+  </section>
+
+  <!-- ================= 八 ================= -->
+  <section class="panel">
+    <div class="sec-num">八</div>
+    <h2>一句话总结</h2>
+    <div class="summary">
+      <div class="summary-item">
+        <div class="key">时域</div>
+        <div class="val">横轴是位置 / 时间，你看到的是<b>信号本身的形状</b>。</div>
+      </div>
+      <div class="summary-item">
+        <div class="key">频域</div>
+        <div class="val">横轴是频率，你看到的是<b>各个频率成分的多少和相位</b>。</div>
+      </div>
+      <div class="summary-item">
+        <div class="key">DFT</div>
+        <div class="val">拿所有频率的标准波去和信号逐一匹配，<b>匹配结果就是频域表示</b>。</div>
+      </div>
+      <div class="summary-item">
+        <div class="key">one-hot 脉冲</div>
+        <div class="val">做 DFT 后每个频率都得到<b>相同的幅度</b>，但相位是 <b>2πka/113</b>，这些相位<b>唯一编码了数字 a</b>。</div>
+      </div>
+    </div>
+  </section>
+
+</div>
+
+<script>
+(() => {
+  const N = 113;
+  let a = 15;
+  let time = 0;
+  const DPR = Math.min(window.devicePixelRatio || 1, 2);
+
+  // ---------- 工具 ----------
+  function setupCanvas(id, w, h) {
+    const cv = document.getElementById(id);
+    cv.width = w * DPR;
+    cv.height = h * DPR;
+    cv.style.width = '100%';
+    cv.style.maxWidth = w + 'px';
+    cv.style.height = 'auto';
+    const ctx = cv.getContext('2d');
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    return { cv, ctx, w, h };
+  }
+
+  // ---------- 初始化画布 ----------
+  const sound = setupCanvas('soundCanvas', 900, 190);
+  const onehotSmall = setupCanvas('onehotSmallCanvas', 900, 110);
+  const spectrum = setupCanvas('spectrumCanvas', 900, 240);
+  const standard = setupCanvas('standardCanvas', 900, 330);
+  const dft = setupCanvas('dftCanvas', 900, 330);
+  const phase = setupCanvas('phaseCanvas', 900, 360);
+
+  // ================= 一、声音波形（动画） =================
+  function drawSound() {
+    const { ctx, w, h } = sound;
+    ctx.clearRect(0, 0, w, h);
+
+    const padL = 60, padR = 30;
+    const pw = w - padL - padR;
+    const midY = h / 2 + 8;
+    const amp = h / 2 - 32;
+
+    // 坐标轴
+    ctx.strokeStyle = '#1d2335';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padL, midY);
+    ctx.lineTo(padL + pw, midY);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(padL, 14);
+    ctx.lineTo(padL, midY + 28);
+    ctx.stroke();
+
+    // 网格
+    ctx.strokeStyle = '#141a2a';
+    ctx.setLineDash([3, 5]);
+    ctx.beginPath();
+    ctx.moveTo(padL, midY - amp);
+    ctx.lineTo(padL + pw, midY - amp);
+    ctx.moveTo(padL, midY + amp);
+    ctx.lineTo(padL + pw, midY + amp);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 波形
+    ctx.beginPath();
+    for (let i = 0; i <= pw; i++) {
+      const x = i / pw;
+      const v =
+        0.55 * Math.sin(x * 21 - time * 2.0) +
+        0.28 * Math.sin(x * 46 - time * 3.1) +
+        0.17 * Math.sin(x * 88 - time * 1.4);
+      const px = padL + i;
+      const py = midY - v * amp;
+      if (i === 0) ctx.moveTo(px, py);
+      else ctx.lineTo(px, py);
+    }
+    ctx.strokeStyle = '#4ea1ff';
+    ctx.lineWidth = 2.2;
+    ctx.stroke();
+
+    // 发光效果
+    ctx.globalAlpha = 0.25;
+    ctx.strokeStyle = '#7cb8ff';
+    ctx.lineWidth = 5;
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+
+    // 标签
+    ctx.fillStyle = '#4a5578';
+    ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('音量', padL - 10, midY - amp);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText('时间 →', padL + pw / 2, midY + 32);
+  }
+
+  // ================= 一、one-hot 小图 =================
+  function drawOneHotSmall() {
+    const { ctx, w, h } = onehotSmall;
+    ctx.clearRect(0, 0, w, h);
+
+    const padL = 60, padR = 30;
+    const pw = w - padL - padR;
+    const bw = pw / N;
+    const baseY = h - 26;
+    const barH = h - 48;
+
+    // 零值短横
+    ctx.fillStyle = 'rgba(78, 161, 255, 0.15)';
+    for (let n = 0; n < N; n++) {
+      if (n === a) continue;
+      ctx.fillRect(padL + n * bw, baseY - 2, Math.max(bw - 0.6, 1), 2);
+    }
+
+    // 脉冲
+    const grad = ctx.createLinearGradient(0, baseY - barH, 0, baseY);
+    grad.addColorStop(0, '#6ee7a8');
+    grad.addColorStop(1, 'rgba(110, 231, 168, 0.1)');
+    ctx.fillStyle = grad;
+    ctx.fillRect(padL + a * bw, baseY - barH, Math.max(bw, 2.5), barH);
+
+    // 标注
+    const ax = padL + a * bw + bw / 2;
+    ctx.strokeStyle = 'rgba(110, 231, 168, 0.5)';
+    ctx.setLineDash([3, 3]);
+    ctx.beginPath();
+    ctx.moveTo(ax, baseY - barH - 6);
+    ctx.lineTo(ax, baseY + 6);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = '#6ee7a8';
+    ctx.font = '600 12px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(`x[${a}] = 1`, ax, baseY - barH - 10);
+
+    // 轴标签
+    ctx.fillStyle = '#4a5578';
+    ctx.font = '11px ui-monospace, monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('1', padL - 8, baseY - barH);
+    ctx.fillText('0', padL - 8, baseY);
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText('0', padL, baseY + 8);
+    ctx.fillText('n →', padL + pw / 2, baseY + 8);
+    ctx.fillText('112', padL + pw, baseY + 8);
+  }
+
+  // ================= 二、频谱 =================
+  function drawSpectrum() {
+    const { ctx, w, h } = spectrum;
+    ctx.clearRect(0, 0, w, h);
+
+    const padL = 60, padR = 30, padT = 28, padB = 44;
+    const pw = w - padL - padR;
+    const ph = h - padT - padB;
+
+    const K = 56;
+    const bw = pw / K;
+
+    // 坐标轴
+    ctx.strokeStyle = '#1d2335';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(padL, padT + ph);
+    ctx.lineTo(padL + pw, padT + ph);
+    ctx.stroke();
+
+    // 包络
+    const envelope = k => {
+      return 0.90 * Math.exp(-Math.pow(k - 8, 2) / 38) +
+             0.60 * Math.exp(-Math.pow(k - 18, 2) / 26) +
+             0.38 * Math.exp(-Math.pow(k - 30, 2) / 52) +
+             0.20 * Math.exp(-Math.pow(k - 44, 2) / 70) +
+             0.08 * Math.exp(-Math.pow(k - 52, 2) / 20);
+    };
+
+    // 柱子
+    for (let k = 1; k <= K; k++) {
+      const v = envelope(k);
+      const x = padL + (k - 1) * bw;
+      const bh = v * ph;
+      const y = padT + ph - bh;
+
+      // 颜色随频率渐变：蓝 → 粉 → 绿
+      let color;
+      if (k < 15) color = `rgba(78, 161, 255, ${0.35 + v * 0.65})`;
+      else if (k < 32) color = `rgba(180, 120, 255, ${0.35 + v * 0.65})`;
+      else color = `rgba(255, 126, 182, ${0.35 + v * 0.65})`;
+
+      ctx.fillStyle = color;
+      ctx.fillRect(x + 0.8, y, Math.max(bw - 1.6, 1.2), bh);
+
+      // 顶部光点
+      if (v > 0.15) {
+        ctx.beginPath();
+        ctx.arc(x + bw / 2, y, 2.5, 0, Math.PI * 2);
+        ctx.fillStyle = '#ffffff';
+        ctx.globalAlpha = 0.55;
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // 标注峰值
+    const peaks = [
+      { k: 8, label: '低频', color: '#4ea1ff' },
+      { k: 18, label: '中频', color: '#b478ff' },
+      { k: 30, label: '中高频', color: '#ff7eb6' },
+    ];
+    peaks.forEach(p => {
+      const x = padL + (p.k - 0.5) * bw;
+      const y = padT + ph - envelope(p.k) * ph;
+      ctx.fillStyle = p.color;
+      ctx.font = '600 11px ui-monospace, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(p.label, x, y - 8);
+    });
+
+    // y 轴标签
+    ctx.fillStyle = '#4a5578';
+    ctx.font = '11px ui-monospace, monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('强度', padL - 10, padT + ph / 2);
+
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillText('频率 →', padL + pw / 2, padT + ph + 22);
+
+    // 轴刻度
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.fillStyle = '#3a466a';
+    [0, 14, 28, 42, 56].forEach(k => {
+      const x = padL + k * bw;
+      ctx.fillText(k, x, padT + ph + 6);
+    });
+  }
+
+  // ================= 四、标准波（动画） =================
+  function drawStandard() {
+    const { ctx, w, h } = standard;
+    ctx.clearRect(0, 0, w, h);
+
+    const ks = [1, 3, 8];
+    const rowH = 106;
+    const n = (time * 30) % N;
+
+    ks.forEach((k, idx) => {
+      const y0 = 14 + idx * rowH;
+      const cy = y0 + 44;
+      const cx = 78;
+      const R = 32;
+
+      // 颜色
+      const hue = idx === 0 ? 210 : (idx === 1 ? 275 : 330);
+      const color = `hsl(${hue}, 80%, 68%)`;
+
+      // 圆
+      ctx.beginPath();
+      ctx.arc(cx, cy, R, 0, Math.PI * 2);
+      ctx.strokeStyle = '#2a3454';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // 十字轴
+      ctx.strokeStyle = '#1a2033';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(cx - R - 6, cy); ctx.lineTo(cx + R + 6, cy);
+      ctx.moveTo(cx, cy - R - 6); ctx.lineTo(cx, cy + R + 6);
+      ctx.stroke();
+
+      // 相量
+      const ang = -2 * Math.PI * k * n / N;
+      const px = cx + R * Math.cos(ang);
+      const py = cy - R * Math.sin(ang);
+
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(px, py);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+
+      // 端点
+      ctx.beginPath();
+      ctx.arc(px, py, 5, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.strokeStyle = '#0b0e18';
+      ctx.lineWidth = 2;
+      ctx.stroke();
+
+      // 到实轴的虚线
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.35;
+      ctx.setLineDash([3, 3]);
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      ctx.lineTo(px, cy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.globalAlpha = 1;
+
+      // 右侧波形
+      const wx0 = 150, wx1 = w - 30;
+      const ww = wx1 - wx0;
+      const wamp = 30;
+
+      // 波形
+      ctx.beginPath();
+      for (let i = 0; i <= 360; i++) {
+        const nn = i / 360 * N;
+        const v = Math.cos(2 * Math.PI * k * nn / N);
+        const x = wx0 + i / 360 * ww;
+        const y = cy - v * wamp;
+        if (i === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 1.6;
+      ctx.globalAlpha = 0.7;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
+      // 波形当前点
+      const xn = wx0 + (n / N) * ww;
+      const vn = Math.cos(2 * Math.PI * k * n / N);
+      const yn = cy - vn * wamp;
+
+      ctx.beginPath();
+      ctx.arc(xn, yn, 4.5, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.strokeStyle = '#0b0e18';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // 标签
+      ctx.fillStyle = color;
+      ctx.font = '600 12px ui-monospace, SFMono-Regular, Menlo, monospace';
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(`k = ${k}`, 12, cy);
+
+      // 速度说明
+      ctx.fillStyle = '#5d6a8f';
+      ctx.font = '10px ui-monospace, monospace';
+      const speedText = k === 1 ? '113 步转一圈' : `${k} 倍速，113 步转 ${k} 圈`;
+      ctx.fillText(speedText, 150, y0 + 2);
+    });
+  }
+
+  // ================= 五、one-hot → DFT =================
+  function drawDFT() {
+    const { ctx, w, h } = dft;
+    ctx.clearRect(0, 0, w, h);
+
+    const padL = 70, padR = 40;
+    const pw = w - padL - padR;
+    const bw = pw / N;
+
+    // ---- 第 1 行：one-hot ----
+    const y1Top = 24, y1H = 68;
+    const y1Base = y1Top + y1H;
+
+    ctx.fillStyle = '#5d6a8f';
+    ctx.font = '600 11px ui-monospace, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('时域：one-hot 脉冲 x[n]', padL, 6);
+
+    // 零值
+    ctx.fillStyle = 'rgba(78, 161, 255, 0.12)';
+    for (let n = 0; n < N; n++) {
+      if (n === a) continue;
+      ctx.fillRect(padL + n * bw, y1Base - 2, Math.max(bw - 0.6, 1), 2);
+    }
+    // 脉冲
+    const g1 = ctx.createLinearGradient(0, y1Top, 0, y1Base);
+    g1.addColorStop(0, '#6ee7a8');
+    g1.addColorStop(1, 'rgba(110, 231, 168, 0.08)');
+    ctx.fillStyle = g1;
+    ctx.fillRect(padL + a * bw, y1Top, Math.max(bw, 2.5), y1H);
+
+    // 标注 a
+    const ax = padL + a * bw + bw / 2;
+    ctx.fillStyle = '#6ee7a8';
+    ctx.font = '600 11px ui-monospace, monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText(`a = ${a}`, ax, y1Top - 4);
+
+    // ---- 箭头 ----
+    const arrowY = y1Base + 34;
+    ctx.strokeStyle = '#3d7bff';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(w / 2, y1Base + 12);
+    ctx.lineTo(w / 2, arrowY);
+    ctx.stroke();
+    // 箭头尖
+    ctx.beginPath();
+    ctx.moveTo(w / 2 - 6, arrowY - 8);
+    ctx.lineTo(w / 2, arrowY);
+    ctx.lineTo(w / 2 + 6, arrowY - 8);
+    ctx.strokeStyle = '#3d7bff';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    ctx.fillStyle = '#7cb8ff';
+    ctx.font = '600 12px ui-monospace, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('DFT', w / 2 + 14, arrowY - 4);
+
+    // ---- 第 2 行：平坦的幅度谱 ----
+    const y2Top = arrowY + 24;
+    const y2H = 68;
+    const y2Base = y2Top + y2H;
+
+    ctx.fillStyle = '#5d6a8f';
+    ctx.font = '600 11px ui-monospace, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText('频域：幅度 |X[k]| —— 平坦，所有频率一样强', padL, y2Top - 16);
+
+    // 柱子，全部等高
+    for (let k = 0; k < N; k++) {
+      const x = padL + k * bw;
+      // 渐变色
+      const ratio = k / N;
+      const hue = 210 + ratio * 140;
+      ctx.fillStyle = `hsla(${hue}, 78%, 62%, 0.75)`;
+      ctx.fillRect(x + 0.5, y2Base - y2H, Math.max(bw - 1, 1), y2H);
+    }
+
+    // 顶部线
+    ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(padL, y2Base - y2H);
+    ctx.lineTo(padL + pw, y2Base - y2H);
+    ctx.stroke();
+
+    // 标注
+    ctx.fillStyle = '#ffd08a';
+    ctx.font = '600 11px ui-monospace, monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('|X[k]| = 1', padL - 10, y2Base - y2H);
+
+    ctx.fillStyle = '#5d6a8f';
+    ctx.font = '11px ui-monospace, monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('0', padL - 10, y2Base);
+
+    // x 轴标签
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'top';
+    ctx.fillStyle = '#4a5578';
+    ctx.fillText('k = 0', padL, y2Base + 6);
+    ctx.fillText('k = 56', padL + pw / 2, y2Base + 6);
+    ctx.fillText('k = 112', padL + pw, y2Base + 6);
+
+    // 右侧提示
+    ctx.fillStyle = '#5d6a8f';
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.textAlign = 'right';
+    ctx.textBaseline = 'top';
+    ctx.fillText('幅度都相同', padL + pw, y2Base - y2H - 16);
+  }
+
+  // ================= 六、相位圆 =================
+  function drawPhase() {
+    const { ctx, w, h } = phase;
+    ctx.clearRect(0, 0, w, h);
+
+    const cx = w / 2;
+    const cy = h / 2 + 6;
+    const R = 132;
+
+    // 外圆
+    ctx.beginPath();
+    ctx.arc(cx, cy, R, 0, Math.PI * 2);
+    ctx.strokeStyle = '#2a3454';
+    ctx.lineWidth = 2;
+    ctx.stroke();
+
+    // 内圆
+    ctx.beginPath();
+    ctx.arc(cx, cy, R * 0.55, 0, Math.PI * 2);
+    ctx.strokeStyle = '#1a2033';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([3, 4]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // 十字轴
+    ctx.strokeStyle = '#1a2033';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx - R - 24, cy); ctx.lineTo(cx + R + 24, cy);
+    ctx.moveTo(cx, cy - R - 24); ctx.lineTo(cx, cy + R + 24);
+    ctx.stroke();
+
+    // 相位点：k = 1 .. 24
+    const Kmax = 24;
+    for (let k = 1; k <= Kmax; k++) {
+      const theta = -2 * Math.PI * k * a / N; // 标准 DFT 相位
+      const px = cx + R * Math.cos(theta);
+      const py = cy + R * Math.sin(theta);
+
+      const ratio = (k - 1) / (Kmax - 1);
+      const hue = 210 + ratio * 130;
+      const color = `hsl(${hue}, 80%, 66%)`;
+
+      // 半径连线
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(px, py);
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = 0.18;
+      ctx.lineWidth = 1;
+      ctx.stroke();
+      ctx.globalAlpha = 1;
+
+      // 点
+      ctx.beginPath();
+      ctx.arc(px, py, k === 1 ? 6 : 4.2, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.fill();
+      ctx.strokeStyle = '#0b0e18';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // 只标注前几个
+      if (k <= 5) {
+        const dirX = Math.cos(theta) >= 0 ? 1 : -1;
+        ctx.fillStyle = color;
+        ctx.font = '600 10px ui-monospace, monospace';
+        ctx.textAlign = dirX > 0 ? 'left' : 'right';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(`k=${k}`, px + dirX * 10, py - 8);
+      }
+    }
+
+    // 中心点
+    ctx.beginPath();
+    ctx.arc(cx, cy, 3.5, 0, Math.PI * 2);
+    ctx.fillStyle = '#4a5578';
+    ctx.fill();
+
+    // 标题
+    ctx.fillStyle = '#8dc1ff';
+    ctx.font = '600 12px ui-monospace, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'top';
+    ctx.fillText(`相位 ∠X[k] = −2πka/${N}`, 20, 16);
+
+    ctx.fillStyle = '#5d6a8f';
+    ctx.font = '11px ui-monospace, monospace';
+    ctx.fillText(`a = ${a} 固定，k 从 1 到 ${Kmax}`, 20, 36);
+
+    // 右侧说明
+    ctx.fillStyle = '#6d7a9e';
+    ctx.font = '11px ui-monospace, monospace';
+    ctx.textAlign = 'right';
+    ctx.fillText(`k 越大，点转得越快`, w - 20, 16);
+    ctx.fillText(`相位唯一编码了 a`, w - 20, 36);
+
+    // 颜色条说明
+    const gradX = w - 180, gradY = h - 30, gradW = 150, gradH = 8;
+    const cg = ctx.createLinearGradient(gradX, 0, gradX + gradW, 0);
+    cg.addColorStop(0, 'hsl(210, 80%, 66%)');
+    cg.addColorStop(0.5, 'hsl(275, 80%, 66%)');
+    cg.addColorStop(1, 'hsl(340, 80%, 66%)');
+    ctx.fillStyle = cg;
+    ctx.fillRect(gradX, gradY, gradW, gradH);
+
+    ctx.fillStyle = '#5d6a8f';
+    ctx.font = '10px ui-monospace, monospace';
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'bottom';
+    ctx.fillText('k=1', gradX, gradY - 3);
+    ctx.textAlign = 'right';
+    ctx.fillText(`k=${Kmax}`, gradX + gradW, gradY - 3);
+  }
+
+  // ================= 刷新所有 =================
+  function refreshStatic() {
+    document.getElementById('aVal').textContent = a;
+    document.getElementById('flowA').textContent = a;
+    // 演示用：固定 b = 42
+    document.getElementById('flowAns').textContent = (a + 42) % N;
+
+    drawOneHotSmall();
+    drawDFT();
+    drawPhase();
+  }
+
+  // ================= 动画循环 =================
+  let lastTs = 0;
+  function loop(ts) {
+    if (!lastTs) lastTs = ts;
+    const dt = (ts - lastTs) / 1000;
+    lastTs = ts;
+
+    time += dt;
+
+    drawSound();
+    drawStandard();
+
+    requestAnimationFrame(loop);
+  }
+
+  // ================= 事件 =================
+  document.getElementById('aSlider').addEventListener('input', e => {
+    a = +e.target.value;
+    refreshStatic();
+  });
+
+  // ================= 滚动进入动画 =================
+  const observer = new IntersectionObserver(entries => {
+    entries.forEach(entry => {
+      if (entry.isIntersecting) {
+        entry.target.classList.add('visible');
+      }
+    });
+  }, { threshold: 0.08 });
+
+  document.querySelectorAll('.panel').forEach(p => observer.observe(p));
+
+  // ================= 启动 =================
+  drawSpectrum();
+  refreshStatic();
+  requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>
